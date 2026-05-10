@@ -135,3 +135,28 @@ Each overlay occupies a fixed canvas position regardless of which others are act
 - Active layers: top-left
 - Dim count: top-right
 - FPS: bottom-right (separate toggle from dim count)
+
+## v8 -- Pre-Port Cleanup
+
+Structural prep for the Rust port. No runtime behavior changes.
+
+### Registry extraction
+
+Moved all registries (`TRANSFORMS`, `DISPLACEMENTS`, `PALETTES`, `RATIO_GROUPS`, etc.) and pipeline math (`applyPipeline`, `compositionString`, `countDOFs`, etc.) into `registries.js` -- a pure JS module with no React/Three.js/browser dependencies. v8 imports from it. v7 preserved untouched as the known-good reference. ~850 lines removed from the component file.
+
+### Preset system reconciliation
+
+`preset-schema.ts` and `preset-io.ts` are now the canonical spec for the Rust port. Fixed divergences from v7's inlined copy: `Display` interface updated to 5 fields (`showFormula`, `showDimCount`, `showActiveLayers`, `showParamValues`, `showFps`), camera `orbitY` default corrected to 0.1, `cloneToggleParam`/`cloneBlend` fixed to deep-clone `phaseOffset`. Preset key vocabulary decision documented: serialized keys stay descriptive (`pipeline.operations`, `pipeline.lift`), stylized names live in UI only.
+
+### Test coverage
+
+Added vitest with 84 tests covering individual transform/displacement math, pipeline composition, blend interpolation, non-commutativity, pre-flattened equivalence, numerical Jacobian determinants, composition string generation, DOF counting, layer IDs, registry structure, and preset round-trip (including all 5 Display fields and forward compatibility).
+
+### Recording quality -- known limitations (not fixing before port)
+
+Observed during v8 validation at 60fps baseline:
+
+- **Live recording**: FPS drops from 60 to 35-45. Expected -- compositing to the capture canvas and VP8 encoding at 20Mbps in real-time is genuinely expensive in a browser. The `captureStream` + `MediaRecorder` path has inherent overhead that cannot be eliminated in JS.
+- **Offline recording**: Output is choppy with poor visual quality despite the FPS counter reading a steady 60. The deterministic clock is working correctly (frames are produced at exact 1/fps intervals), but VP8/WebM encoding produces artifacts. This is a codec limitation, not a timing bug.
+
+Both issues are moot for the Rust port: Phase 2 uses wgpu + native encoding (or image-sequence export) with SpoutCapture for Resolume. The entire capture/encoding pipeline will be replaced. No value in debugging browser MediaRecorder quirks that won't transfer.

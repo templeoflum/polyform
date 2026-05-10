@@ -1,5 +1,8 @@
 // =============================================================================
-// Polyform preset I/O
+// Polyform preset I/O -- CANONICAL SPEC
+//
+// This file is the single source of truth for preset import/export logic. The
+// Rust port must reproduce these conversion functions exactly.
 //
 // Bridges between in-app React state and the on-disk Preset schema.
 //
@@ -260,11 +263,15 @@ function cloneParam(p: Param): Param {
 }
 
 function cloneToggleParam(p: ToggleParam): ToggleParam {
-  return { ...p };
+  const c = { ...p };
+  if (p.phaseOffset) c.phaseOffset = { ...p.phaseOffset };
+  return c;
 }
 
 function cloneBlend(b: Blend): Blend {
-  return { ...b };
+  const c = { ...b };
+  if (b.phaseOffset) c.phaseOffset = { ...b.phaseOffset };
+  return c;
 }
 
 function cloneLayer(l: Layer): Layer {

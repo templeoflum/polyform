@@ -1,5 +1,9 @@
 // =============================================================================
-// Polyform preset schema
+// Polyform preset schema -- CANONICAL SPEC
+//
+// This file is the single source of truth for the preset format. The Rust port
+// must reproduce these types and validators exactly. Any divergence between
+// this file and the running JS code (v7/v8 component) is a bug in the JS side.
 //
 // A preset is the complete patch state needed to reproduce a configuration:
 // pipeline structure, parameter values and ranges, camera, sampling, palette,
@@ -12,6 +16,25 @@
 //
 // Forward compatibility: unknown fields are tolerated silently. Missing
 // required fields fall back to sensible defaults. Type mismatches are rejected.
+// =============================================================================
+
+// =============================================================================
+// PRESET KEY VOCABULARY
+//
+// Decision: serialized preset keys use descriptive, stable identifiers:
+//
+//   pipeline.operations  -- XY plane operations (R2 -> R2)
+//   pipeline.lift        -- 3D displacement layers
+//   Layer                -- a single pipeline entry (operation or lift)
+//   Param                -- an animatable scalar
+//   ToggleParam          -- a Param with an on/off switch
+//   Blend                -- per-layer mix amount (a Param in [0, 1])
+//
+// Stylized vocabulary used in the UI and documentation -- "refractor",
+// "refractive stack", "signal flow", "lattice scale", "lattice density" --
+// does NOT appear in the serialized format. UI labels map to these keys at
+// render time. This separation keeps the preset format readable across
+// implementations (JS, Rust, C++) without coupling to display-layer naming.
 // =============================================================================
 
 export const SCHEMA_NAME = "polyform.preset";
@@ -171,7 +194,10 @@ export interface Sampling {
 
 export interface Display {
   showFormula: boolean;
-  showDimReadout: boolean;
+  showDimCount: boolean;
+  showActiveLayers: boolean;
+  showParamValues: boolean;
+  showFps: boolean;
 }
 
 // -----------------------------------------------------------------------------
@@ -279,7 +305,7 @@ export function defaultCamera(): Camera {
   return {
     position: {
       orbitX: defaultToggleParam(true, 0, 0, Math.PI * 2, true),
-      orbitY: { ...defaultToggleParam(true, 0.6, 0.1, Math.PI - 0.1, true), ratio: 1 / PHI },
+      orbitY: { ...defaultToggleParam(true, 0.1, 0.1, Math.PI - 0.1, true), ratio: 1 / PHI },
       distance: defaultToggleParam(true, 3.5, 0.8, 12),
       targetX: defaultToggleParam(false, 0, -2, 2),
       targetY: defaultToggleParam(false, 0, -2, 2),
@@ -325,7 +351,7 @@ export function defaultSampling(): Sampling {
 }
 
 export function defaultDisplay(): Display {
-  return { showFormula: true, showDimReadout: true };
+  return { showFormula: true, showDimCount: true, showActiveLayers: true, showParamValues: true, showFps: false };
 }
 
 export function defaultDefaults(): PresetDefaults {
@@ -545,7 +571,10 @@ function readDisplay(input: unknown): Display {
   if (!isObject(input)) return fb;
   return {
     showFormula: asBool(input.showFormula, fb.showFormula),
-    showDimReadout: asBool(input.showDimReadout, fb.showDimReadout),
+    showDimCount: asBool(input.showDimCount, fb.showDimCount),
+    showActiveLayers: asBool(input.showActiveLayers, fb.showActiveLayers),
+    showParamValues: asBool(input.showParamValues, fb.showParamValues),
+    showFps: asBool(input.showFps, fb.showFps),
   };
 }
 
