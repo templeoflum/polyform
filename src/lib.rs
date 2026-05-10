@@ -8,6 +8,9 @@ pub mod registry;
 pub mod pipeline;
 pub mod notation;
 pub mod preset_io;
+pub mod animation;
+pub mod transition;
+pub mod engine;
 
 #[cfg(test)]
 mod tests;

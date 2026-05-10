@@ -40,10 +40,10 @@ Target: Native real-time performance instrument with video output routing.
 - [x] Port import/export with registry reconciliation (drop unknown types, fill missing params)
 - [x] Round-trip tests: load JS presets in Rust, re-export, diff
 
-### Phase 2.4: Animation Engine
-- [ ] Param sweep (loop/sweep modes, ratio-scaled, phaseOffset)
-- [ ] Transition manager (cosine easing, per-param targets, time-based)
-- [ ] Tempo clock (BPM-driven, deterministic mode for offline render)
+### Phase 2.4: Animation Engine ✓
+- [x] Param sweep (loop/sweep modes, ratio-scaled, phaseOffset)
+- [x] Transition manager (cosine easing, per-param targets, time-based)
+- [x] Tempo clock (BPM-driven, deterministic mode for offline render)
 
 ### Phase 2.5: wgpu Rendering
 - [ ] Grid geometry generation (density-controlled lattice)
