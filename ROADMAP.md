@@ -35,10 +35,10 @@ Target: Native real-time performance instrument with video output routing.
 - [x] Port composition string, DOF counting
 - [x] Golden test vectors: generate from JS, verify Rust output within f64 tolerance
 
-### Phase 2.3: Preset System
-- [ ] Port validation (tolerant: unknown fields ignored, missing → defaults, type mismatch → warn)
-- [ ] Port import/export with registry reconciliation (drop unknown types, fill missing params)
-- [ ] Round-trip tests: load JS presets in Rust, re-export, diff
+### Phase 2.3: Preset System ✓
+- [x] Port validation (tolerant: unknown fields ignored, missing → defaults, type mismatch → warn)
+- [x] Port import/export with registry reconciliation (drop unknown types, fill missing params)
+- [x] Round-trip tests: load JS presets in Rust, re-export, diff
 
 ### Phase 2.4: Animation Engine
 - [ ] Param sweep (loop/sweep modes, ratio-scaled, phaseOffset)

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use crate::preset::{Preset, SCHEMA_NAME, SCHEMA_VERSION};
+use crate::preset_io;
 use crate::registry::Registry;
 
 // =============================================================================
@@ -335,4 +336,34 @@ fn golden_vectors() {
             v.key, v.expected[2], (dz - v.expected[2]).abs()
         );
     }
+}
+
+// =============================================================================
+// Cross-language reconciliation: JS-exported preset loads without warnings
+// =============================================================================
+
+#[test]
+fn test_js_preset_reconciliation() {
+    let json = include_str!("../tests/fixtures/js-export.json");
+    let registry = Registry::new();
+    let result = preset_io::import_preset_json(json, &registry).unwrap();
+
+    // All types and params in the JS fixture are valid — no warnings expected
+    assert!(
+        result.warnings.is_empty(),
+        "Expected no warnings for valid JS export, got: {:?}",
+        result.warnings
+    );
+
+    // Verify structure preserved
+    assert_eq!(result.preset.pipeline.operations.len(), 2);
+    assert_eq!(result.preset.pipeline.operations[0].type_key, "rotate");
+    assert_eq!(result.preset.pipeline.operations[1].type_key, "zPow");
+    assert_eq!(result.preset.pipeline.lift.len(), 1);
+    assert_eq!(result.preset.pipeline.lift[0].type_key, "zMagnitude");
+
+    // Verify IDs preserved
+    assert_eq!(result.preset.pipeline.operations[0].id, "a1b2c3d4");
+    assert_eq!(result.preset.pipeline.operations[1].id, "e5f6a7b8");
+    assert_eq!(result.preset.pipeline.lift[0].id, "c1d2e3f4");
 }

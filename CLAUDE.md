@@ -29,7 +29,9 @@ The project's core purpose is making higher-dimensional mathematical thinking *f
 | `src/registry.rs` | OperationDef/LiftDef with fn pointers, labels, categories |
 | `src/pipeline.rs` | Pipeline application, pre-flatten, numerical Jacobian |
 | `src/notation.rs` | Composition string, formula symbols, DOF counting |
+| `src/preset_io.rs` | Reconciliation, tolerant validation, import/export, make_layer |
 | `tests/fixtures/golden_vectors.json` | JS-generated expected outputs for cross-language validation |
+| `tests/fixtures/reconciliation-test.json` | Fixture for testing registry reconciliation (unknown/orphaned fields) |
 | `tests/generate_golden_vectors.mjs` | Node script to regenerate golden vectors from JS |
 | `Cargo.toml` | Rust crate config |
 | `vite.config.js` | Vite config |

@@ -7,6 +7,7 @@ pub mod lift;
 pub mod registry;
 pub mod pipeline;
 pub mod notation;
+pub mod preset_io;
 
 #[cfg(test)]
 mod tests;
