@@ -24,7 +24,13 @@ The project's core purpose is making higher-dimensional mathematical thinking *f
 | `src/layer.rs` | Pipeline layer type |
 | `src/preset.rs` | Top-level Preset, Camera, Quaternion, Sampling, Display |
 | `src/palette.rs` | Palette struct + static data |
-| `src/registry.rs` | Registry types + operation/lift metadata |
+| `src/ops.rs` | 25 operation functions (R2 -> R2) with uniform signature |
+| `src/lift.rs` | 15 lift functions (R3 displacement) with uniform signature |
+| `src/registry.rs` | OperationDef/LiftDef with fn pointers, labels, categories |
+| `src/pipeline.rs` | Pipeline application, pre-flatten, numerical Jacobian |
+| `src/notation.rs` | Composition string, formula symbols, DOF counting |
+| `tests/fixtures/golden_vectors.json` | JS-generated expected outputs for cross-language validation |
+| `tests/generate_golden_vectors.mjs` | Node script to regenerate golden vectors from JS |
 | `Cargo.toml` | Rust crate config |
 | `vite.config.js` | Vite config |
 | `polyform-brief.md` | Project philosophy |

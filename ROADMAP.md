@@ -22,18 +22,18 @@ These remain valid but are deferred until the Rust app is functional. Some (MIDI
 
 Target: Native real-time performance instrument with video output routing.
 
-### Phase 2.1: Scaffold + Core Types
-- [ ] Cargo workspace with `polyform-core` library crate
-- [ ] All core types: `Param`, `ToggleParam`, `Layer`, `Camera`, `Quaternion`, `Sampling`, `Display`, `Preset`
-- [ ] Serde JSON round-trip matching existing preset schema exactly
-- [ ] Unit tests: Rust Preset → JSON matches JS format
+### Phase 2.1: Scaffold + Core Types ✓
+- [x] Cargo workspace with `polyform-core` library crate
+- [x] All core types: `Param`, `ToggleParam`, `Layer`, `Camera`, `Quaternion`, `Sampling`, `Display`, `Preset`
+- [x] Serde JSON round-trip matching existing preset schema exactly
+- [x] Unit tests: Rust Preset → JSON matches JS format
 
-### Phase 2.2: Registries + Pipeline Math
-- [ ] Port 30 operation functions (linear, complex, polar, wave, non-holomorphic)
-- [ ] Port 15 lift functions (height, wave, full-3D)
-- [ ] Port `applyPipeline`, `applyDispPipeline`, pre-flattened variants
-- [ ] Port composition string, DOF counting
-- [ ] Golden test vectors: generate from JS, verify Rust output within f64 tolerance
+### Phase 2.2: Registries + Pipeline Math ✓
+- [x] Port 25 operation functions (linear, complex, polar, wave, non-holomorphic, utility)
+- [x] Port 15 lift functions (height, wave, full-3D)
+- [x] Port `applyPipeline`, `applyDispPipeline`, pre-flattened variants
+- [x] Port composition string, DOF counting
+- [x] Golden test vectors: generate from JS, verify Rust output within f64 tolerance
 
 ### Phase 2.3: Preset System
 - [ ] Port validation (tolerant: unknown fields ignored, missing → defaults, type mismatch → warn)

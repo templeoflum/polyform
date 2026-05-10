@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use crate::preset::{Preset, SCHEMA_NAME, SCHEMA_VERSION};
+use crate::registry::Registry;
 
 // =============================================================================
 // Round-trip test
@@ -250,4 +252,87 @@ fn serialized_json_structure() {
     // (this is for the empty preset which has no layers, so check via a constructed value)
     let blend_json = serde_json::to_value(crate::types::default_blend()).unwrap();
     assert!(blend_json.get("phaseOffset").is_none());
+}
+
+// =============================================================================
+// Golden vector test: cross-language validation against JS output
+// =============================================================================
+
+#[derive(serde::Deserialize)]
+struct GoldenVectors {
+    operations: Vec<OpVector>,
+    lifts: Vec<LiftVector>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpVector {
+    key: String,
+    x: f64,
+    y: f64,
+    params: HashMap<String, f64>,
+    x0: f64,
+    y0: f64,
+    expected: [f64; 2],
+}
+
+#[derive(serde::Deserialize)]
+struct LiftVector {
+    key: String,
+    x: f64,
+    y: f64,
+    params: HashMap<String, f64>,
+    x0: f64,
+    y0: f64,
+    j_signed: f64,
+    expected: [f64; 3],
+}
+
+#[test]
+fn golden_vectors() {
+    let json = include_str!("../tests/fixtures/golden_vectors.json");
+    let vectors: GoldenVectors = serde_json::from_str(json).unwrap();
+    let reg = Registry::new();
+
+    // Tolerance: tight for most, loose for guarded operations
+    let guarded_ops = ["zInv", "zLog", "spiral", "mobius"];
+    let guarded_lifts = ["zLogJac"];
+
+    for (i, v) in vectors.operations.iter().enumerate() {
+        let def = reg.operations.get(v.key.as_str())
+            .unwrap_or_else(|| panic!("missing operation in registry: {}", v.key));
+        let (rx, ry) = (def.apply)(v.x, v.y, &v.params, v.x0, v.y0);
+        let eps = if guarded_ops.contains(&v.key.as_str()) { 1e-4 } else { 1e-10 };
+        assert!(
+            (rx - v.expected[0]).abs() < eps,
+            "op[{i}] {}: x mismatch: rust={rx}, js={}, diff={}",
+            v.key, v.expected[0], (rx - v.expected[0]).abs()
+        );
+        assert!(
+            (ry - v.expected[1]).abs() < eps,
+            "op[{i}] {}: y mismatch: rust={ry}, js={}, diff={}",
+            v.key, v.expected[1], (ry - v.expected[1]).abs()
+        );
+    }
+
+    for (i, v) in vectors.lifts.iter().enumerate() {
+        let def = reg.lift.get(v.key.as_str())
+            .unwrap_or_else(|| panic!("missing lift in registry: {}", v.key));
+        let (dx, dy, dz) = (def.apply)(v.x, v.y, &v.params, v.x0, v.y0, v.j_signed);
+        let eps = if guarded_lifts.contains(&v.key.as_str()) { 1e-4 } else { 1e-10 };
+        assert!(
+            (dx - v.expected[0]).abs() < eps,
+            "lift[{i}] {}: dx mismatch: rust={dx}, js={}, diff={}",
+            v.key, v.expected[0], (dx - v.expected[0]).abs()
+        );
+        assert!(
+            (dy - v.expected[1]).abs() < eps,
+            "lift[{i}] {}: dy mismatch: rust={dy}, js={}, diff={}",
+            v.key, v.expected[1], (dy - v.expected[1]).abs()
+        );
+        assert!(
+            (dz - v.expected[2]).abs() < eps,
+            "lift[{i}] {}: dz mismatch: rust={dz}, js={}, diff={}",
+            v.key, v.expected[2], (dz - v.expected[2]).abs()
+        );
+    }
 }
