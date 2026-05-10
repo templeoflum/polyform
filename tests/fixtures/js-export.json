@@ -1,0 +1,289 @@
+{
+  "schema": "polyform.preset",
+  "version": 1,
+  "metadata": {
+    "name": "Test Fixture",
+    "description": "",
+    "author": "",
+    "created": "2025-01-01T00:00:00.000Z",
+    "modified": "2025-01-01T00:00:00.000Z",
+    "tags": []
+  },
+  "tempo": {
+    "value": 0.3,
+    "min": 0,
+    "max": 2,
+    "anim": false,
+    "animMode": "sweep",
+    "ratio": 1
+  },
+  "defaults": {
+    "blendTime": 1
+  },
+  "palette": "acid",
+  "pipeline": {
+    "operations": [
+      {
+        "id": "a1b2c3d4",
+        "type": "rotate",
+        "enabled": true,
+        "blend": {
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "anim": false,
+          "animMode": "sweep",
+          "ratio": 1
+        },
+        "blendTimeOverride": null,
+        "params": {
+          "theta": {
+            "value": 0,
+            "min": 0,
+            "max": 6.283185307179586,
+            "anim": false,
+            "animMode": "loop",
+            "ratio": 1
+          }
+        }
+      },
+      {
+        "id": "e5f6a7b8",
+        "type": "zPow",
+        "enabled": true,
+        "blend": {
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "anim": false,
+          "animMode": "sweep",
+          "ratio": 1
+        },
+        "blendTimeOverride": null,
+        "params": {
+          "n": {
+            "value": 2,
+            "min": 0.1,
+            "max": 5,
+            "anim": false,
+            "animMode": "sweep",
+            "ratio": 1
+          }
+        }
+      }
+    ],
+    "lift": [
+      {
+        "id": "c1d2e3f4",
+        "type": "zMagnitude",
+        "enabled": true,
+        "blend": {
+          "value": 1,
+          "min": 0,
+          "max": 1,
+          "anim": false,
+          "animMode": "sweep",
+          "ratio": 1
+        },
+        "blendTimeOverride": null,
+        "params": {
+          "amp": {
+            "value": 1,
+            "min": -2,
+            "max": 2,
+            "anim": false,
+            "animMode": "sweep",
+            "ratio": 1
+          }
+        }
+      }
+    ]
+  },
+  "camera": {
+    "position": {
+      "orbitX": {
+        "value": 0,
+        "min": 0,
+        "max": 6.283185307179586,
+        "anim": false,
+        "animMode": "loop",
+        "ratio": 1,
+        "on": true
+      },
+      "orbitY": {
+        "value": 0.1,
+        "min": 0.1,
+        "max": 3.041592653589793,
+        "anim": false,
+        "animMode": "loop",
+        "ratio": 0.6180339887498948,
+        "on": true
+      },
+      "distance": {
+        "value": 3.5,
+        "min": 0.8,
+        "max": 12,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": true
+      },
+      "targetX": {
+        "value": 0,
+        "min": -2,
+        "max": 2,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      },
+      "targetY": {
+        "value": 0,
+        "min": -2,
+        "max": 2,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      },
+      "roll": {
+        "value": 0,
+        "min": 0,
+        "max": 6.283185307179586,
+        "anim": false,
+        "animMode": "loop",
+        "ratio": 1,
+        "on": false
+      }
+    },
+    "lens": {
+      "projection": "perspective",
+      "focalLength": {
+        "value": 35,
+        "min": 8,
+        "max": 200,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": true
+      },
+      "sensorSize": {
+        "value": 36,
+        "min": 4,
+        "max": 80,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": true
+      },
+      "orthoZoom": {
+        "value": 2,
+        "min": 0.3,
+        "max": 6,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": true
+      },
+      "anamorphic": {
+        "value": 1,
+        "min": 0.3,
+        "max": 3,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      },
+      "shiftX": {
+        "value": 0,
+        "min": -1,
+        "max": 1,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      },
+      "shiftY": {
+        "value": 0,
+        "min": -1,
+        "max": 1,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      }
+    },
+    "distortion": {
+      "k1": {
+        "value": 0,
+        "min": -1,
+        "max": 1,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      },
+      "k2": {
+        "value": 0,
+        "min": -1,
+        "max": 1,
+        "anim": false,
+        "animMode": "sweep",
+        "ratio": 1,
+        "on": false
+      }
+    }
+  },
+  "quaternion": {
+    "on": false,
+    "mode": "fixed",
+    "anim": true,
+    "angle": 0,
+    "angleRatio": 1,
+    "axes": {
+      "ax": {
+        "value": 0.5,
+        "anim": false,
+        "ratio": 1.618033988749895
+      },
+      "ay": {
+        "value": 1,
+        "anim": false,
+        "ratio": 1
+      },
+      "az": {
+        "value": 0.3,
+        "anim": false,
+        "ratio": 0.6180339887498948
+      }
+    },
+    "driftSpeed": 0.1
+  },
+  "sampling": {
+    "scale": {
+      "value": 0.6,
+      "min": 0.1,
+      "max": 1.5,
+      "anim": false,
+      "animMode": "sweep",
+      "ratio": 1,
+      "on": true
+    },
+    "density": {
+      "value": 27,
+      "min": 7,
+      "max": 51,
+      "anim": false,
+      "animMode": "sweep",
+      "ratio": 1,
+      "on": true
+    }
+  },
+  "display": {
+    "showFormula": true,
+    "showDimCount": true,
+    "showActiveLayers": true,
+    "showParamValues": true,
+    "showFps": false
+  }
+}

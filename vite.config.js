@@ -4,5 +4,6 @@ export default defineConfig({
   plugins: [react()],
   test: {
     globals: false,
+    include: ["web/**/*.test.{js,ts}"],
   },
 });

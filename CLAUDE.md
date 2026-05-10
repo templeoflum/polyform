@@ -12,13 +12,20 @@ The project's core purpose is making higher-dimensional mathematical thinking *f
 
 | File | Purpose |
 |------|---------|
-| `src/polydimensional-coupling-v8.jsx` | Current component (v8 — extracted registries, ~4500 lines) |
-| `src/main.jsx` | Entry point |
-| `src/registries.js` | Transform, displacement, palette, and ratio-group registries |
-| `src/preset-schema.ts` | Preset format types + validators (schema v1) |
-| `src/preset-io.ts` | State <-> preset bridge |
-| `src/registries.test.js` | Registry tests (vitest) |
-| `src/preset-roundtrip.test.ts` | Preset roundtrip tests (vitest) |
+| `web/polydimensional-coupling-v8.jsx` | Current component (v8 — extracted registries, ~4500 lines) |
+| `web/main.jsx` | Entry point |
+| `web/registries.js` | Transform, displacement, palette, and ratio-group registries |
+| `web/preset-schema.ts` | Preset format types + validators (schema v1) |
+| `web/preset-io.ts` | State <-> preset bridge |
+| `web/registries.test.js` | Registry tests (vitest) |
+| `web/preset-roundtrip.test.ts` | Preset roundtrip tests (vitest) |
+| `src/lib.rs` | Rust crate root |
+| `src/types.rs` | Core types: Param, ToggleParam, AnimMode, etc. |
+| `src/layer.rs` | Pipeline layer type |
+| `src/preset.rs` | Top-level Preset, Camera, Quaternion, Sampling, Display |
+| `src/palette.rs` | Palette struct + static data |
+| `src/registry.rs` | Registry types + operation/lift metadata |
+| `Cargo.toml` | Rust crate config |
 | `vite.config.js` | Vite config |
 | `polyform-brief.md` | Project philosophy |
 | `DEVLOG.md` | Development history |

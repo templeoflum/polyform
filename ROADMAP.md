@@ -2,59 +2,73 @@
 
 ## Current State
 
-v7 web prototype is functional: geometry buffer reuse, animation decoupled from React, transition manager, preset system, live + offline recording with overlay capture.
+v8 web prototype complete: registries extracted, preset schema canonical, 84 tests passing. Source restructured (`src/`, `archive/`). Web prototype is design-validated — moving to Rust port.
 
 ---
 
-## Near-Term (Web Prototype)
+## Web Prototype (Parked)
 
-### Recording Quality
-- [ ] Investigate offline render choppiness (likely VP8/WebM encoding artifacts at current bitrate)
-- [ ] Try alternative codecs (H.264 via MediaRecorder where supported)
-- [ ] Experiment with higher bitrate or variable bitrate encoding
-- [ ] Consider frame-to-image-sequence export as lossless alternative
+These remain valid but are deferred until the Rust app is functional. Some (MIDI, recording quality) are better solved natively.
 
-### Preset System
-- [ ] Preset morphing (crossfade between two presets using layer UUIDs for alignment)
-- [ ] Preset library browser (thumbnails, categories)
-- [ ] Preset versioning (migration from v1 to future schema versions)
-
-### Input
-- [ ] MIDI mapping (CC to any param, note triggers for layer toggles)
-- [ ] OSC input for network control
-- [ ] Keyboard shortcuts for performance (layer toggles, neutralize, record)
-
-### Pipeline Extensions
-- [ ] Additional operation families (fractal, noise-based)
-- [ ] Additional lift families (terrain, attractor-based)
-- [ ] Layer groups / sub-compositions
-
-### UI
-- [ ] Collapsible panel sections
-- [ ] Param lock (exclude from preset load / neutralize)
-- [ ] Undo/redo for structural changes
+- [ ] Recording quality (codec artifacts — likely solved by native encoding)
+- [ ] Preset morphing (crossfade via layer UUID matching)
+- [ ] MIDI / OSC input
+- [ ] Additional operation/lift families
+- [ ] UI polish (undo/redo, param lock, collapsible panels)
 
 ---
 
-## Phase 2 — Native App (Rust + wgpu + egui)
+## Phase 2 — Rust Port
 
-Target: Real-time performance instrument with video output routing.
+Target: Native real-time performance instrument with video output routing.
 
-### Core
-- [ ] Port pipeline math to Rust (operations, lift, camera)
-- [ ] wgpu compute shader for grid evaluation (parallel per-point)
-- [ ] egui UI matching current web controls
-- [ ] Preset format compatibility (same JSON schema, Rust serde)
+### Phase 2.1: Scaffold + Core Types
+- [ ] Cargo workspace with `polyform-core` library crate
+- [ ] All core types: `Param`, `ToggleParam`, `Layer`, `Camera`, `Quaternion`, `Sampling`, `Display`, `Preset`
+- [ ] Serde JSON round-trip matching existing preset schema exactly
+- [ ] Unit tests: Rust Preset → JSON matches JS format
 
-### Video Output
-- [ ] SpoutCapture bridge for Resolume / VDMX / OBS
-- [ ] NDI output as alternative
-- [ ] Hardware-accelerated encoding for recording
+### Phase 2.2: Registries + Pipeline Math
+- [ ] Port 30 operation functions (linear, complex, polar, wave, non-holomorphic)
+- [ ] Port 15 lift functions (height, wave, full-3D)
+- [ ] Port `applyPipeline`, `applyDispPipeline`, pre-flattened variants
+- [ ] Port composition string, DOF counting
+- [ ] Golden test vectors: generate from JS, verify Rust output within f64 tolerance
 
-### Performance
-- [ ] GPU-side geometry (vertex shader displacement)
-- [ ] Multi-resolution grid (adaptive density near camera)
-- [ ] 120fps+ target for VJ use
+### Phase 2.3: Preset System
+- [ ] Port validation (tolerant: unknown fields ignored, missing → defaults, type mismatch → warn)
+- [ ] Port import/export with registry reconciliation (drop unknown types, fill missing params)
+- [ ] Round-trip tests: load JS presets in Rust, re-export, diff
+
+### Phase 2.4: Animation Engine
+- [ ] Param sweep (loop/sweep modes, ratio-scaled, phaseOffset)
+- [ ] Transition manager (cosine easing, per-param targets, time-based)
+- [ ] Tempo clock (BPM-driven, deterministic mode for offline render)
+
+### Phase 2.5: wgpu Rendering
+- [ ] Grid geometry generation (density-controlled lattice)
+- [ ] Pipeline execution (compute shader or CPU + vertex upload — evaluate both)
+- [ ] Camera: orbit, perspective/orthographic, lens params, Brown-Conrady distortion
+- [ ] Quaternion tumble (SO(3))
+- [ ] Jacobian computation (finite differences)
+- [ ] Buffer pool (pre-allocated, reused per frame)
+
+### Phase 2.6: egui UI
+- [ ] Window with wgpu surface
+- [ ] Overlay system (signal flow, active layers, dim count, FPS — fixed positions)
+- [ ] Control panels matching web UI (tempo, palette, scale/density, operations, lift, quat, camera)
+- [ ] Layer add/remove/reorder with blend animation
+- [ ] Preset save/load via native file dialogs
+
+### Phase 2.7: Integration
+- [ ] SpoutCapture bridge for Resolume / OBS
+- [ ] Live + offline recording (native encoding)
+- [ ] MIDI mapping (CC → param, note → layer toggle)
+
+### Cross-Cutting Constraints
+- **Preset JSON is the bridge.** Web presets must load in Rust and vice versa.
+- **2D grid anchor, per-layer blend, smooth transitions, dim readout** — identity constraints, not negotiable.
+- **Stable layer UUIDs** — preset morphing depends on ID matching across presets.
 
 ---
 
