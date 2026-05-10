@@ -12,17 +12,19 @@ The project's core purpose is making higher-dimensional mathematical thinking *f
 
 | File | Purpose |
 |------|---------|
-| `polydimensional-coupling-v7.jsx` | Current component (v7 — perf + offline renderer, ~4900 lines) |
-| `polydimensional-coupling-v6.jsx` | Previous version (preset system, blend, transitions) |
-| `polydimensional-coupling-v5.jsx` | Original prototype (~2160 lines) |
-| `main.jsx` | Entry point |
+| `src/polydimensional-coupling-v8.jsx` | Current component (v8 — extracted registries, ~4500 lines) |
+| `src/main.jsx` | Entry point |
+| `src/registries.js` | Transform, displacement, palette, and ratio-group registries |
+| `src/preset-schema.ts` | Preset format types + validators (schema v1) |
+| `src/preset-io.ts` | State <-> preset bridge |
+| `src/registries.test.js` | Registry tests (vitest) |
+| `src/preset-roundtrip.test.ts` | Preset roundtrip tests (vitest) |
 | `vite.config.js` | Vite config |
-| `preset-schema.ts` | Preset format types + validators (schema v1) |
-| `preset-io.ts` | State <-> preset bridge |
 | `polyform-brief.md` | Project philosophy |
 | `DEVLOG.md` | Development history |
 | `ROADMAP.md` | Current priorities |
 | `README.md` | Public-facing documentation |
+| `archive/` | Legacy versions (v5, v6, v7) and old docs |
 
 ## Build & Run
 
