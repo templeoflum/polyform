@@ -1,5 +1,7 @@
 mod camera;
 mod gpu;
+#[cfg(target_os = "windows")]
+mod spout;
 mod ui;
 
 use std::sync::Arc;
@@ -121,6 +123,14 @@ struct App {
 
     // FPS counter
     fps_counter: FpsCounter,
+
+    // Spout sender (Windows-only)
+    #[cfg(target_os = "windows")]
+    spout_sender: Option<spout::SpoutSender>,
+    #[cfg(target_os = "windows")]
+    spout_enabled: bool,
+    #[cfg(target_os = "windows")]
+    spout_include_overlays: bool,
 }
 
 impl App {
@@ -158,6 +168,12 @@ impl App {
             output_egui_state: None,
             output_egui_renderer: None,
             fps_counter: FpsCounter::new(),
+            #[cfg(target_os = "windows")]
+            spout_sender: None,
+            #[cfg(target_os = "windows")]
+            spout_enabled: false,
+            #[cfg(target_os = "windows")]
+            spout_include_overlays: false,
         }
     }
 }
@@ -235,7 +251,7 @@ impl ApplicationHandler for App {
             .unwrap_or(output_caps.formats[0]);
 
         let output_surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format: output_format,
             width: output_size.width.max(1),
             height: output_size.height.max(1),
@@ -481,23 +497,65 @@ impl App {
             None => return,
         };
 
-        if let (Some(renderer), Some(output)) = (&mut self.renderer, &self.output) {
+        // Render the lattice (borrows self.renderer + self.output)
+        let render_result = if let (Some(renderer), Some(output)) =
+            (&mut self.renderer, &self.output)
+        {
             match renderer.render(frame_state, &output.surface, &output.surface_config) {
                 Ok(surface_texture) => {
-                    // Render egui overlay on top, then present
-                    self.render_output_overlay(&device, &queue, &surface_texture);
-                    surface_texture.present();
+                    let w = output.surface_config.width;
+                    let h = output.surface_config.height;
+
+                    // Spout readback before overlays (clean lattice only)
+                    #[cfg(target_os = "windows")]
+                    if self.spout_enabled && !self.spout_include_overlays {
+                        spout_send(
+                            &mut self.spout_sender,
+                            renderer,
+                            &surface_texture,
+                            w,
+                            h,
+                        );
+                    }
+
+                    Some((surface_texture, w, h))
                 }
                 Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                     output.surface.configure(&device, &output.surface_config);
+                    None
                 }
                 Err(wgpu::SurfaceError::OutOfMemory) => {
                     eprintln!("Out of GPU memory");
+                    None
                 }
                 Err(e) => {
                     eprintln!("Render error: {e}");
+                    None
                 }
             }
+        } else {
+            None
+        };
+
+        // Overlay + present (renderer borrow is released)
+        if let Some((surface_texture, w, h)) = render_result {
+            self.render_output_overlay(&device, &queue, &surface_texture);
+
+            // Spout readback after overlays
+            #[cfg(target_os = "windows")]
+            if self.spout_enabled && self.spout_include_overlays {
+                if let Some(renderer) = &mut self.renderer {
+                    spout_send(
+                        &mut self.spout_sender,
+                        renderer,
+                        &surface_texture,
+                        w,
+                        h,
+                    );
+                }
+            }
+
+            surface_texture.present();
         }
     }
 
@@ -1237,6 +1295,18 @@ impl App {
                         }
                     }
                 }
+                #[cfg(target_os = "windows")]
+                UiAction::SetSpoutEnabled(enabled) => {
+                    self.spout_enabled = enabled;
+                    if !enabled {
+                        // Drop the sender to release D3D11 resources
+                        self.spout_sender = None;
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                UiAction::SetSpoutOverlays(include) => {
+                    self.spout_include_overlays = include;
+                }
                 UiAction::LoadPreset => {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Polyform Preset", &["json"])
@@ -1430,6 +1500,39 @@ fn field_to_param_path(field: &ParamField) -> polyform_core::animation::ParamPat
         },
         ParamField::Tempo => ParamPath::Tempo,
         ParamField::View(view_key) => ParamPath::View(view_key.clone()),
+    }
+}
+
+// =============================================================================
+// Spout helper (free function to avoid borrow conflicts)
+// =============================================================================
+
+#[cfg(target_os = "windows")]
+fn spout_send(
+    sender: &mut Option<spout::SpoutSender>,
+    renderer: &mut GpuRenderer,
+    surface_texture: &wgpu::SurfaceTexture,
+    w: u32,
+    h: u32,
+) {
+    // Lazily create sender if dimensions changed or not yet created
+    let needs_new = match sender {
+        Some(s) => s.width() != w || s.height() != h,
+        None => true,
+    };
+    if needs_new {
+        *sender = None;
+        *sender = spout::SpoutSender::new("Polyform", w, h);
+        if sender.is_none() {
+            log::warn!("Failed to create Spout sender");
+            return;
+        }
+    }
+
+    if let Some(pixels) = renderer.readback_texture(&surface_texture.texture, w, h) {
+        if let Some(s) = sender {
+            s.send_image(&pixels);
+        }
     }
 }
 

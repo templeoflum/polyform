@@ -208,6 +208,11 @@ pub struct GpuRenderer {
     current_scale: f32,
     vertex_count: u32,
     lines_count: u32,
+
+    // GPU readback for Spout
+    readback_buffer: Option<wgpu::Buffer>,
+    readback_width: u32,
+    readback_height: u32,
 }
 
 impl GpuRenderer {
@@ -438,6 +443,9 @@ impl GpuRenderer {
             current_scale: 0.0,
             vertex_count: 0,
             lines_count: 0,
+            readback_buffer: None,
+            readback_width: 0,
+            readback_height: 0,
         };
 
         // Generate initial grid
@@ -714,6 +722,93 @@ impl GpuRenderer {
                 }
             })
             .collect()
+    }
+
+    /// Read back a texture's pixel data to the CPU.
+    ///
+    /// Returns BGRA pixel data (width * height * 4 bytes) with row padding
+    /// stripped. The readback buffer is lazily created and reused across frames.
+    pub fn readback_texture(
+        &mut self,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) -> Option<Vec<u8>> {
+        let bytes_per_pixel: u32 = 4;
+        let unpadded_row = width * bytes_per_pixel;
+        // wgpu requires rows aligned to 256 bytes for buffer copies
+        let align: u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded_row = (unpadded_row + align - 1) / align * align;
+        let buffer_size = (padded_row * height) as u64;
+
+        // Recreate buffer if dimensions changed
+        if self.readback_width != width || self.readback_height != height {
+            self.readback_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("readback_buffer"),
+                size: buffer_size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.readback_width = width;
+            self.readback_height = height;
+        }
+
+        let buffer = self.readback_buffer.as_ref()?;
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback_encoder"),
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Synchronous map — blocks until GPU is done
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+
+        if rx.recv().ok()?.is_err() {
+            return None;
+        }
+
+        let mapped = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((unpadded_row * height) as usize);
+
+        // Strip row padding
+        for row in 0..height {
+            let start = (row * padded_row) as usize;
+            let end = start + unpadded_row as usize;
+            pixels.extend_from_slice(&mapped[start..end]);
+        }
+
+        drop(mapped);
+        buffer.unmap();
+
+        Some(pixels)
     }
 }
 

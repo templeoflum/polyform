@@ -210,6 +210,10 @@ pub enum UiAction {
     SetPresetName(String),
     SavePreset,
     LoadPreset,
+    #[cfg(target_os = "windows")]
+    SetSpoutEnabled(bool),
+    #[cfg(target_os = "windows")]
+    SetSpoutOverlays(bool),
 }
 
 /// Identifies a specific Param for direct mutation.
@@ -238,6 +242,10 @@ pub struct OverlayState {
     pub show_dim_count: bool,
     pub show_active_layers: bool,
     pub show_fps: bool,
+    #[cfg(target_os = "windows")]
+    pub spout_enabled: bool,
+    #[cfg(target_os = "windows")]
+    pub spout_include_overlays: bool,
 }
 
 impl Default for OverlayState {
@@ -247,6 +255,10 @@ impl Default for OverlayState {
             show_dim_count: true,
             show_active_layers: true,
             show_fps: false,
+            #[cfg(target_os = "windows")]
+            spout_enabled: false,
+            #[cfg(target_os = "windows")]
+            spout_include_overlays: false,
         }
     }
 }
@@ -274,6 +286,22 @@ pub fn build_ui(
             ui.checkbox(&mut overlay.show_active_layers, "Layers");
             ui.checkbox(&mut overlay.show_fps, "FPS");
         });
+
+        #[cfg(target_os = "windows")]
+        {
+            ui.horizontal(|ui| {
+                ui.label("Spout:");
+                if ui.checkbox(&mut overlay.spout_enabled, "Send").changed() {
+                    actions.push(UiAction::SetSpoutEnabled(overlay.spout_enabled));
+                }
+                if overlay.spout_enabled {
+                    if ui.checkbox(&mut overlay.spout_include_overlays, "Include overlays").changed() {
+                        actions.push(UiAction::SetSpoutOverlays(overlay.spout_include_overlays));
+                    }
+                }
+            });
+        }
+
         ui.separator();
 
         tempo_section(ui, preset, &mut actions);
