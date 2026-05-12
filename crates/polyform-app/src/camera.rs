@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use polyform_core::frame_state::FrameState;
 use polyform_core::types::ProjectionMode;
 
@@ -87,15 +87,10 @@ pub fn build_camera(frame: &FrameState, aspect: f32) -> CameraMatrices {
 
     // --- Quaternion tumble (model rotation) ---
     let model = if frame.quat_on {
-        let [ax, ay, az] = frame.quat_axis;
-        let axis = Vec3::new(ax as f32, ay as f32, az as f32);
-        let len_sq = axis.length_squared();
-        let safe_axis = if len_sq < 1e-6 {
-            Vec3::new(0.0, 1.0, 0.0)
-        } else {
-            axis.normalize()
-        };
-        Mat4::from_axis_angle(safe_axis, frame.quat_angle as f32)
+        let [w, x, y, z] = frame.quat;
+        let q = Quat::from_xyzw(x as f32, y as f32, z as f32, w as f32);
+        // Normalize to guard against accumulated floating-point drift
+        Mat4::from_quat(q.normalize())
     } else {
         Mat4::IDENTITY
     };
@@ -132,6 +127,7 @@ mod tests {
             k1: 0.0,
             k2: 0.0,
             quat_on: false,
+            quat: [1.0, 0.0, 0.0, 0.0],
             quat_angle: 0.0,
             quat_axis: [0.0, 1.0, 0.0],
             scale: 0.6,
@@ -168,6 +164,9 @@ mod tests {
     fn quaternion_with_known_rotation() {
         let mut frame = default_frame();
         frame.quat_on = true;
+        // 90° around Y axis: w=cos(π/4), y=sin(π/4)
+        let half = std::f64::consts::FRAC_PI_4;
+        frame.quat = [half.cos(), 0.0, half.sin(), 0.0];
         frame.quat_angle = std::f64::consts::FRAC_PI_2;
         frame.quat_axis = [0.0, 1.0, 0.0];
         let cam = build_camera(&frame, 1.0);

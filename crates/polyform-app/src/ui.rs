@@ -205,6 +205,8 @@ pub enum UiAction {
     SetQuatMode(QuaternionMode),
     SetQuatDriftSpeed(f64),
     SetToggleParamOn(String, bool),    // view_key
+    ParamGrabStart(ParamField),        // user started dragging an animated slider
+    ParamGrabEnd(ParamField),          // user released an animated slider
     SetPresetName(String),
     SavePreset,
     LoadPreset,
@@ -324,7 +326,7 @@ pub fn build_ui(
                         .max_height(available.y)
                         .show(ui, |ui| {
                             ui.set_min_width(col_width);
-                            quaternion_section(ui, preset, &mut actions);
+                            quaternion_section(ui, preset, frame_state, &mut actions);
                         });
                 });
             }
@@ -337,7 +339,7 @@ pub fn build_ui(
                     ui.separator();
                     camera_lens_section(ui, preset, frame_state, &mut actions);
                     ui.separator();
-                    quaternion_section(ui, preset, &mut actions);
+                    quaternion_section(ui, preset, frame_state, &mut actions);
                 });
             }
         });
@@ -733,8 +735,17 @@ fn param_widget(
     } else {
         label.to_string()
     };
-    if ui.add(egui::Slider::new(&mut value, param.min..=param.max).text(&slider_label)).changed() {
+    let response = ui.add(egui::Slider::new(&mut value, param.min..=param.max).text(&slider_label));
+    if response.changed() {
         actions.push(UiAction::SetParam(field.clone(), value));
+    }
+    if param.anim {
+        if response.drag_started() {
+            actions.push(UiAction::ParamGrabStart(field.clone()));
+        }
+        if response.drag_stopped() {
+            actions.push(UiAction::ParamGrabEnd(field.clone()));
+        }
     }
 
     // Anim controls on a second row (compact)
@@ -799,11 +810,21 @@ fn toggle_param_widget(
         let slider = egui::Slider::new(&mut value, tp.param.min..=tp.param.max)
             .text(&slider_label)
             .clamping(egui::SliderClamping::Never);
-        if ui.add(slider).changed() {
+        let response = ui.add(slider);
+        if response.changed() {
             actions.push(UiAction::SetParam(
                 ParamField::View(view_key.to_string()),
                 value,
             ));
+        }
+        if tp.param.anim {
+            let grab_field = ParamField::View(view_key.to_string());
+            if response.drag_started() {
+                actions.push(UiAction::ParamGrabStart(grab_field.clone()));
+            }
+            if response.drag_stopped() {
+                actions.push(UiAction::ParamGrabEnd(grab_field));
+            }
         }
     });
 
@@ -966,7 +987,7 @@ fn camera_lens_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&
 // Quaternion section
 // =============================================================================
 
-fn quaternion_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAction>) {
+fn quaternion_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
     egui::CollapsingHeader::new("Quaternion")
         .default_open(false)
         .show(ui, |ui| {
@@ -990,39 +1011,43 @@ fn quaternion_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAc
                 });
 
                 // Angle — full param widget
+                let swept_angle = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.angle"));
                 param_widget(
                     ui,
                     "angle",
                     &q.angle,
                     ParamField::View("quaternion.angle".to_string()),
-                    None,
+                    swept_angle,
                     actions,
                 );
 
                 // Axes — full param widgets (only in Fixed mode)
                 if q.mode == QuaternionMode::Fixed {
+                    let swept_ax = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ax"));
                     param_widget(
                         ui,
                         "ax",
                         &q.ax,
                         ParamField::View("quaternion.ax".to_string()),
-                        None,
+                        swept_ax,
                         actions,
                     );
+                    let swept_ay = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ay"));
                     param_widget(
                         ui,
                         "ay",
                         &q.ay,
                         ParamField::View("quaternion.ay".to_string()),
-                        None,
+                        swept_ay,
                         actions,
                     );
+                    let swept_az = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.az"));
                     param_widget(
                         ui,
                         "az",
                         &q.az,
                         ParamField::View("quaternion.az".to_string()),
-                        None,
+                        swept_az,
                         actions,
                     );
                 }

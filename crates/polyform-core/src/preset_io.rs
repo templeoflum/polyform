@@ -459,19 +459,11 @@ fn read_param(
         .map(|v| as_f64(v, 0.0, warnings, &format!("{path}.offset")))
         .unwrap_or(0.0);
 
-    // Shape: read from "shape" field, or migrate from legacy "animMode"
+    // Shape: read from "shape" field
     let shape = if let Some(v) = obj.get("shape") {
         v.as_str()
             .map(|s| match s {
                 "sawtooth" => ShapeFunction::Sawtooth,
-                _ => ShapeFunction::Cosine,
-            })
-            .unwrap_or(fallback.shape)
-    } else if let Some(v) = obj.get("animMode") {
-        // Legacy migration: loop -> Sawtooth, sweep -> Cosine
-        v.as_str()
-            .map(|s| match s {
-                "loop" => ShapeFunction::Sawtooth,
                 _ => ShapeFunction::Cosine,
             })
             .unwrap_or(fallback.shape)
@@ -678,7 +670,7 @@ mod tests {
         assert_eq!(theta.value, 0.0);
         assert_eq!(theta.min, 0.0);
         assert_eq!(theta.max, std::f64::consts::PI * 2.0);
-        assert_eq!(theta.shape, crate::types::ShapeFunction::Sawtooth); // periodic
+        assert_eq!(theta.shape, crate::types::ShapeFunction::Cosine);
         assert!(result.warnings.is_empty());
     }
 
@@ -692,8 +684,8 @@ mod tests {
                     {
                         "id": "m1", "type": "zMagnitude", "enabled": true,
                         "params": {
-                            "amp": { "value": 1.0, "min": -2, "max": 2, "anim": false, "animMode": "sweep", "ratio": 1 },
-                            "oldParam": { "value": 0, "min": 0, "max": 1, "anim": false, "animMode": "sweep", "ratio": 1 }
+                            "amp": { "value": 1.0, "min": -2, "max": 2, "anim": false, "shape": "cosine", "ratio": 1 },
+                            "oldParam": { "value": 0, "min": 0, "max": 1, "anim": false, "shape": "cosine", "ratio": 1 }
                         }
                     }
                 ]
@@ -745,7 +737,7 @@ mod tests {
                         "type": "rotate",
                         "enabled": true,
                         "params": {
-                            "theta": { "value": 1.5, "min": 0, "max": 6.283185307179586, "anim": false, "animMode": "loop", "ratio": 1 }
+                            "theta": { "value": 1.5, "min": 0, "max": 6.283185307179586, "anim": false, "shape": "sawtooth", "ratio": 1 }
                         }
                     }
                 ],
@@ -788,7 +780,7 @@ mod tests {
         assert!(layer.params.contains_key("amp"));
         assert!(layer.params.contains_key("freq"));
         assert!(layer.params.contains_key("phase"));
-        assert_eq!(layer.params["phase"].shape, crate::types::ShapeFunction::Sawtooth); // periodic
+        assert_eq!(layer.params["phase"].shape, crate::types::ShapeFunction::Cosine);
 
         // Unknown
         assert!(make_layer("nonExistent", &registry).is_none());
@@ -799,7 +791,7 @@ mod tests {
         let registry = Registry::new();
         // tempo.value is a string instead of a number — should fall back to default with warning
         let json = r#"{
-            "tempo": { "value": "not a number", "min": 0, "max": 2, "anim": false, "animMode": "sweep", "ratio": 1 }
+            "tempo": { "value": "not a number", "min": 0, "max": 2, "anim": false, "shape": "cosine", "ratio": 1 }
         }"#;
 
         let result = import_preset_json(json, &registry).unwrap();

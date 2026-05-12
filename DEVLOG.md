@@ -4,7 +4,7 @@
 
 The starting point. A single monolithic React + three.js component (~2160 lines) that established the core instrument:
 
-- Three-stage pipeline: operations (R2→R2), lift (R3 displacement), camera
+- Three-stage pipeline: operations (R2->R2), lift (R3 displacement), camera
 - Transform registries: linear, complex (z^n, mobius, exp, log), polar, wave, non-holomorphic
 - Displacement registries: height, wave, full-3D (spherical, conical, helical, ripple)
 - Full camera system: orbit, lens, Brown-Conrady distortion, quaternion tumble
@@ -43,7 +43,7 @@ Major additions building on the v5 foundation:
 - Direct manipulation (slider drag) sets value immediately, bypassing transitions
 
 ### Neutralize / Restore
-- Sequential pipeline teardown: distortion → lens → position → quat → lift → operations
+- Sequential pipeline teardown: distortion -> lens -> position -> quat -> lift -> operations
 - Sequential rebuild in forward order
 - Each group toggles at a staggered delay (500ms between groups)
 - Neutralize snapshot captures which layers were on for accurate restore
@@ -52,15 +52,15 @@ Major additions building on the v5 foundation:
 
 ### Vocabulary Update
 Applied the decided renames throughout the UI:
-- "transform pipeline" → "operations"
-- "displacement pipeline" → "lift"
-- "input scale" → "lattice scale"
-- "grid density" → "lattice density"
-- "composition" → "signal flow"
+- "transform pipeline" -> "operations"
+- "displacement pipeline" -> "lift"
+- "input scale" -> "lattice scale"
+- "grid density" -> "lattice density"
+- "composition" -> "signal flow"
 
 ### Recording
 - Live video capture via `captureStream` + `MediaRecorder`
-- Record flow: neutralize → start recording at neutral → restore (captured) → content → neutralize (captured) → stop at neutral → restore
+- Record flow: neutralize -> start recording at neutral -> restore (captured) -> content -> neutralize (captured) -> stop at neutral -> restore
 
 ## v7 — Performance Pass + Offline Renderer
 
@@ -160,3 +160,43 @@ Observed during v8 validation at 60fps baseline:
 - **Offline recording**: Output is choppy with poor visual quality despite the FPS counter reading a steady 60. The deterministic clock is working correctly (frames are produced at exact 1/fps intervals), but VP8/WebM encoding produces artifacts. This is a codec limitation, not a timing bug.
 
 Both issues are moot for the Rust port: Phase 2 uses wgpu + native encoding (or image-sequence export) with SpoutCapture for Resolume. The entire capture/encoding pipeline will be replaced. No value in debugging browser MediaRecorder quirks that won't transfer.
+
+---
+
+## Phase 2 — Rust Port
+
+### Phase 2.1: Scaffold + Core Types
+
+Cargo workspace with two crates: `polyform-core` (library, all math and types) and `polyform-app` (binary, wgpu + egui). Core types ported: `Param`, `ToggleParam`, `Layer`, `Preset`, `Camera`, `Quaternion`, `Sampling`, `Display`. Serde round-trip validated against the JS preset format.
+
+### Phase 2.2: Registries + Pipeline Math
+
+Ported all 25 operation functions and 15 lift functions with uniform signatures (`fn(x, y, params) -> (x, y)` for ops, `fn(x, y, z, params) -> (x, y, z)` for lifts). Pipeline application, pre-flatten optimization, and numerical Jacobian all ported. Composition string and DOF counting ported. Golden test vectors generated from JS and validated in Rust within f64 tolerance.
+
+### Phase 2.3: Preset System
+
+Tolerant validation ported: unknown fields silently ignored, missing fields filled from registry defaults, type mismatches warned. Registry reconciliation drops unknown operation/lift types and fills missing params from definitions. Round-trip tests confirm Rust import/export matches JS format.
+
+### Phase 2.4: Animation Engine — Parameter Motion Protocol
+
+Replaced the web prototype's clock-accumulator architecture with a master-phase system. The old approach used an unbounded `animClock`, per-param `LoopState` accumulators, and a separate transition overlay that frequently fought with the sweep system. Every blend/toggle bug in the web version traced back to this fundamental split.
+
+**New architecture**: A single master phase `M` advances by `dt * tempo` each tick (unbounded, wrapping handled per-param). Each animated param computes its value as a pure function: `phi = (M * ratio + offset) mod 1.0`, shaped by cosine or sawtooth, then scaled to `[min, max]`. Optional FM modulation via `PhaseModulator` (ratio, depth, shape). Animation on/off is a smooth weight transition (0.0-1.0) blending between base value and animated value.
+
+**Key properties**:
+- Deterministic: same M + config = same output, always
+- No accumulators to get out of sync
+- Transitions are just weight interpolation — no fighting between sweep and transition systems
+- Shape functions: `Cosine` (ping-pong, smooth, default for all params) and `Sawtooth` (linear ramp, wrapping)
+
+**Quaternion system**: Full `Param` controls for angle and all three axes (replacing the old bare-float structure). SLERP-based blending for on/off transitions using angle scaling. NLERP for drift/fixed mode transitions. Slider grab override pauses animation during drag, morphs back on release.
+
+**Preset format clean break**: Old fields (`animMode`, `phaseOffset`, old quaternion `angle`/`angleRatio`/`axes` structure) are no longer supported. New format uses `shape`, `offset`, `modulator` on Param, and full Param objects for quaternion angle/axes. All backwards compatibility code removed.
+
+### Phase 2.5: wgpu Rendering
+
+Grid geometry generated on GPU via compute shader. Pipeline operations and lift applied in the compute pass, results uploaded to vertex buffers. Pre-allocated buffer pool at MAX_VERTICES capacity, reused every frame. Camera system: orbit, perspective/orthographic projection, focal length, sensor size, anamorphic squeeze, shift, Brown-Conrady radial distortion (k1/k2 applied in the vertex shader). Quaternion tumble via `glam::Quat` with SLERP-based blending. Numerical Jacobian via finite differences for height-field lifts.
+
+### Phase 2.6: egui UI
+
+Full control panel matching the web prototype: tempo, palette, lattice scale/density, operation layers, lift layers, quaternion, camera position, camera lens, distortion. Layer add/remove/reorder (button-based) with blend animation. Overlay system at fixed screen positions (signal flow bottom-left, active layers top-left, dim count top-right, FPS bottom-right) with keyboard toggles (S/A/D/F). Preset save/load via native file dialogs (`rfd` crate). Animated slider positions track resolved param values in real time.

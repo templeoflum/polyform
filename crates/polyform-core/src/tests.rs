@@ -220,7 +220,7 @@ fn unknown_fields_ignored() {
         "version": 1,
         "futureField": "should be ignored",
         "metadata": { "name": "Test", "extraStuff": 42 },
-        "tempo": { "value": 0.5, "min": 0, "max": 2, "anim": false, "animMode": "sweep", "ratio": 1 },
+        "tempo": { "value": 0.5, "min": 0, "max": 2, "anim": false, "shape": "cosine", "ratio": 1 },
         "display": { "showFormula": true, "showDimCount": true, "showActiveLayers": true, "showParamValues": true, "showFps": false, "showNewThing": true }
     }"#;
 

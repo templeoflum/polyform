@@ -35,8 +35,9 @@ pub struct FrameState {
 
     // Quaternion
     pub quat_on: bool,
-    pub quat_angle: f64,
-    pub quat_axis: [f64; 3],
+    pub quat: [f64; 4],            // final [w,x,y,z] for rendering (SLERP-blended)
+    pub quat_angle: f64,           // resolved angle param (for UI display)
+    pub quat_axis: [f64; 3],       // resolved axis values (for UI display)
 
     // Sampling
     pub scale: f64,

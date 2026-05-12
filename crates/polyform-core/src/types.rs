@@ -89,8 +89,8 @@ fn default_shape() -> ShapeFunction {
 }
 
 impl Param {
-    /// Create a param with the given value/min/max. anim=false, shape based on periodic flag.
-    pub fn new(value: f64, min: f64, max: f64, periodic: bool) -> Self {
+    /// Create a param with the given value/min/max. anim=false, shape defaults to Cosine.
+    pub fn new(value: f64, min: f64, max: f64, _periodic: bool) -> Self {
         Self {
             value,
             min,
@@ -98,11 +98,7 @@ impl Param {
             anim: false,
             ratio: 1.0,
             offset: 0.0,
-            shape: if periodic {
-                ShapeFunction::Sawtooth
-            } else {
-                ShapeFunction::Cosine
-            },
+            shape: ShapeFunction::Cosine,
             modulator: None,
         }
     }

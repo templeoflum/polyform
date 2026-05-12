@@ -2,17 +2,16 @@
 
 ## Current State
 
-v8 web prototype complete: registries extracted, preset schema canonical, 84 tests passing. Source restructured (`src/`, `archive/`). Web prototype is design-validated — moving to Rust port.
+Rust app functional: wgpu rendering, egui UI, full animation engine with parameter motion protocol. 141 tests passing across polyform-core and polyform-app. Moving to integration phase (Spout, MIDI).
 
 ---
 
 ## Web Prototype (Parked)
 
-These remain valid but are deferred until the Rust app is functional. Some (MIDI, recording quality) are better solved natively.
+These remain valid but are deferred. Some (MIDI, recording quality) are better solved natively.
 
 - [ ] Recording quality (codec artifacts — likely solved by native encoding)
 - [ ] Preset morphing (crossfade via layer UUID matching)
-- [ ] MIDI / OSC input
 - [ ] Additional operation/lift families
 - [ ] UI polish (undo/redo, param lock, collapsible panels)
 
@@ -41,29 +40,42 @@ Target: Native real-time performance instrument with video output routing.
 - [x] Round-trip tests: load JS presets in Rust, re-export, diff
 
 ### Phase 2.4: Animation Engine ✓
-- [x] Param sweep (loop/sweep modes, ratio-scaled, phaseOffset)
+- [x] Parameter motion protocol: master phase, per-param resolve, weighted contributors
+- [x] Shape functions (cosine/sawtooth), FM modulator, phase offset
 - [x] Transition manager (cosine easing, per-param targets, time-based)
 - [x] Tempo clock (BPM-driven, deterministic mode for offline render)
+- [x] Smooth anim on/off via weight transitions (no jumps)
+- [x] Slider grab override (pause animation during drag, morph back on release)
+- [x] Quaternion: full Param controls for angle + axes, NLERP mode transitions
 
-### Phase 2.5: wgpu Rendering
-- [ ] Grid geometry generation (density-controlled lattice)
-- [ ] Pipeline execution (compute shader or CPU + vertex upload — evaluate both)
-- [ ] Camera: orbit, perspective/orthographic, lens params, Brown-Conrady distortion
-- [ ] Quaternion tumble (SO(3))
-- [ ] Jacobian computation (finite differences)
-- [ ] Buffer pool (pre-allocated, reused per frame)
+### Phase 2.5: wgpu Rendering ✓
+- [x] Grid geometry generation (density-controlled lattice)
+- [x] Pipeline execution (compute shader with vertex upload)
+- [x] Camera: orbit, perspective/orthographic, lens params, Brown-Conrady distortion (k1/k2 in shader)
+- [x] Quaternion tumble (SO(3)) with SLERP-based blending
+- [x] Jacobian computation (finite differences)
+- [x] Buffer pool (pre-allocated at MAX_VERTICES, reused per frame)
 
-### Phase 2.6: egui UI
-- [ ] Window with wgpu surface
-- [ ] Overlay system (signal flow, active layers, dim count, FPS — fixed positions)
-- [ ] Control panels matching web UI (tempo, palette, scale/density, operations, lift, quat, camera)
-- [ ] Layer add/remove/reorder with blend animation
-- [ ] Preset save/load via native file dialogs
+### Phase 2.6: egui UI ✓
+- [x] Window with wgpu surface
+- [x] Overlay system (signal flow, active layers, dim count, FPS — fixed positions, keyboard toggles)
+- [x] Control panels (tempo, palette, scale/density, operations, lift, quaternion, camera)
+- [x] Layer add/remove/reorder (button-based) with blend animation
+- [x] Preset save/load via native file dialogs (rfd)
 
 ### Phase 2.7: Integration
 - [ ] SpoutCapture bridge for Resolume / OBS
 - [ ] Live + offline recording (native encoding)
 - [ ] MIDI mapping (CC → param, note → layer toggle)
+
+### Preset Compatibility ✓
+- [x] Clean break: old-format presets (animMode, phaseOffset, old quaternion) are not supported — start fresh
+- [x] New preset format: shape, offset, modulator fields; full Param for quaternion angle/axes
+- [x] Tolerant import still silently ignores unknown fields (old test fixtures still parse)
+- [x] Round-trip test passes with new format
+
+### Known Issues
+- Quaternion drift↔fixed mode switch can produce a small rotational jump (NLERP transition; infrequent operation)
 
 ### Cross-Cutting Constraints
 - **Preset JSON is the bridge.** Web presets must load in Rust and vice versa.

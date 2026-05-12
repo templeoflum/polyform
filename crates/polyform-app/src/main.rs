@@ -938,10 +938,26 @@ impl App {
                         param.anim = anim;
                     }
 
-                    // Set weight target for smooth transition
-                    let path = field_to_param_path(&field);
-                    let target = if anim { 1.0 } else { 0.0 };
-                    self.engine.set_weight_target(path, target, 0.3);
+                    // Weight transitions for smooth anim on/off.
+                    // ToggleParams use a ".anim" suffix path so the anim weight
+                    // doesn't conflict with the on/off toggle weight.
+                    let path = match &field {
+                        ParamField::View(vk) if !vk.starts_with("quaternion.") => {
+                            polyform_core::animation::ParamPath::View(
+                                format!("{}.anim", vk),
+                            )
+                        }
+                        _ => field_to_param_path(&field),
+                    };
+                    if anim {
+                        if self.engine.has_weight(&path) {
+                            self.engine.set_weight_target(path, 1.0, 0.3);
+                        } else {
+                            self.engine.start_weight_transition(path, 0.0, 1.0, 0.3);
+                        }
+                    } else {
+                        self.engine.set_weight_target(path, 0.0, 0.3);
+                    }
                 }
                 UiAction::SetParamShape(field, shape) => {
                     if let Some(param) = self.resolve_param_mut(&field) {
@@ -1100,17 +1116,111 @@ impl App {
                     self.preset.camera.lens.projection = mode;
                 }
                 UiAction::SetQuatOn(on) => {
-                    self.preset.quaternion.on = on;
+                    let blend_time = self.preset.defaults.blend_time;
+                    let path = polyform_core::animation::ParamPath::View(
+                        "quaternion.blend".to_string(),
+                    );
+                    if on && !self.preset.quaternion.on {
+                        // Turning ON: ramp blend weight toward 1
+                        self.preset.quaternion.on = true;
+                        if self.engine.has_weight(&path) {
+                            // Mid-transition: ramp from current value
+                            self.engine.set_weight_target(path, 1.0, blend_time);
+                        } else {
+                            self.engine.start_weight_transition(
+                                path, 0.0, 1.0, blend_time,
+                            );
+                        }
+                    } else if !on && self.preset.quaternion.on {
+                        // Turning OFF: ramp blend weight toward 0
+                        // (angle * blend smoothly reaches 0 = identity)
+                        self.preset.quaternion.on = false;
+                        if self.engine.has_weight(&path) {
+                            self.engine.set_weight_target(path, 0.0, blend_time);
+                        } else {
+                            self.engine.start_weight_transition(
+                                path, 1.0, 0.0, blend_time,
+                            );
+                        }
+                    }
                 }
                 UiAction::SetQuatMode(mode) => {
+                    // Capture current rendered quaternion for smooth transition
+                    if let Some(ref fs) = self.frame_state {
+                        self.engine.set_prev_mode_quat(Some(fs.quat));
+                    }
+                    let blend_time = self.preset.defaults.blend_time;
+                    let path = polyform_core::animation::ParamPath::View(
+                        "quaternion.mode_blend".to_string(),
+                    );
+                    self.engine.start_weight_transition(path, 0.0, 1.0, blend_time);
                     self.preset.quaternion.mode = mode;
                 }
                 UiAction::SetQuatDriftSpeed(speed) => {
                     self.preset.quaternion.drift_speed = speed;
                 }
+                UiAction::ParamGrabStart(ref field) => {
+                    // User started dragging an animated slider.
+                    // Freeze param.value to current swept output so the slider
+                    // snaps to where the animation was, then set weight to 0
+                    // so the static value is used while dragging.
+                    if let Some(swept) = self.lookup_swept_value(field) {
+                        if let Some(param) = self.resolve_param_mut(field) {
+                            param.value = swept;
+                        }
+                    }
+                    // Determine the weight path
+                    let path = match field {
+                        ParamField::View(vk) if !vk.starts_with("quaternion.") => {
+                            polyform_core::animation::ParamPath::View(
+                                format!("{}.anim", vk),
+                            )
+                        }
+                        _ => field_to_param_path(field),
+                    };
+                    // Instant weight to 0 (no transition duration)
+                    self.engine.start_weight_transition(path, 0.0, 0.0, 0.0);
+                }
+                UiAction::ParamGrabEnd(ref field) => {
+                    // User released the slider. Smoothly return to animation.
+                    let path = match field {
+                        ParamField::View(vk) if !vk.starts_with("quaternion.") => {
+                            polyform_core::animation::ParamPath::View(
+                                format!("{}.anim", vk),
+                            )
+                        }
+                        _ => field_to_param_path(field),
+                    };
+                    self.engine.start_weight_transition(path, 0.0, 1.0, 0.3);
+                }
                 UiAction::SetToggleParamOn(view_key, on) => {
+                    // Toggle on/off uses only the weight system.
+                    // resolve_toggle_param blends between neutral (weight=0)
+                    // and active value (weight=1), so we just ramp the weight.
+                    let blend_time = self.preset.defaults.blend_time;
+                    let path = polyform_core::animation::ParamPath::View(
+                        view_key.clone(),
+                    );
+
+                    // Cancel any lingering transition overlay
+                    let target_key = TransitionTarget::ViewParam(view_key.clone());
+                    self.engine.transitions.cancel_for(&target_key);
+                    self.engine.transition_overlay.remove(&target_key);
+
                     if let Some(tp) = resolve_toggle_param_mut(&mut self.preset, &view_key) {
                         tp.on = on;
+                    }
+
+                    let target = if on { 1.0 } else { 0.0 };
+                    if self.engine.has_weight(&path) {
+                        // Mid-transition: ramp from current weight
+                        self.engine.set_weight_target(path, target, blend_time);
+                    } else {
+                        // First toggle: start from the opposite end
+                        let from = if on { 0.0 } else { 1.0 };
+                        self.engine.start_weight_transition(
+                            path, from, target, blend_time,
+                        );
                     }
                 }
                 UiAction::SetPresetName(name) => {

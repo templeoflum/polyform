@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+// TAU used in tests
+#[allow(unused_imports)]
+use std::f64::consts::TAU;
 
 use crate::animation::{resolve_param, safe_ratio, ParamPath, PipelineKind};
 use crate::frame_state::{FlatLayerState, FrameState};
@@ -30,7 +33,7 @@ struct AnimWeight {
 ///
 /// All param values are pure functions of `master_phase` + config. No per-param accumulators.
 pub struct AnimationEngine {
-    /// Master phase M in [0, 1), wraps. Driven by dM/dt = tempo.
+    /// Master phase M (unbounded, grows monotonically). Driven by dM/dt = tempo.
     pub master_phase: f64,
     /// Smooth weight transitions for anim on/off.
     anim_weights: HashMap<ParamPath, AnimWeight>,
@@ -38,10 +41,12 @@ pub struct AnimationEngine {
     pub transitions: TransitionManager,
     /// Wall-clock time (drives transitions, runs even when paused).
     wall_clock: f64,
-    /// Internal transition value overlay.
-    transition_overlay: HashMap<TransitionTarget, f64>,
+    /// Transition value overlay (public for toggle-on cancel path).
+    pub transition_overlay: HashMap<TransitionTarget, f64>,
     /// Quaternion drift phase accumulator (deliberately decoupled from master phase).
     drift_phase: f64,
+    /// Stored quaternion for smooth drift↔fixed mode transitions.
+    prev_mode_quat: Option<[f64; 4]>,
 }
 
 impl AnimationEngine {
@@ -53,6 +58,7 @@ impl AnimationEngine {
             wall_clock: 0.0,
             transition_overlay: HashMap::new(),
             drift_phase: 0.0,
+            prev_mode_quat: None,
         }
     }
 
@@ -64,6 +70,7 @@ impl AnimationEngine {
         self.wall_clock = 0.0;
         self.transition_overlay.clear();
         self.drift_phase = 0.0;
+        self.prev_mode_quat = None;
     }
 
     /// Deep clone for offline rendering.
@@ -75,6 +82,7 @@ impl AnimationEngine {
             wall_clock: self.wall_clock,
             transition_overlay: HashMap::new(),
             drift_phase: self.drift_phase,
+            prev_mode_quat: self.prev_mode_quat,
         }
     }
 
@@ -98,6 +106,31 @@ impl AnimationEngine {
             target,
             rate,
         });
+    }
+
+    /// Start weight transition from a specific value (not from the current weight).
+    pub fn start_weight_transition(&mut self, path: ParamPath, from: f64, to: f64, duration: f64) {
+        let rate = if duration > 0.0 { 1.0 / duration } else { f64::INFINITY };
+        self.anim_weights.insert(path, AnimWeight {
+            current: from,
+            target: to,
+            rate,
+        });
+    }
+
+    /// Check whether an explicit weight entry exists for a path.
+    pub fn has_weight(&self, path: &ParamPath) -> bool {
+        self.anim_weights.contains_key(path)
+    }
+
+    /// Remove a weight entry (revert to default 1.0).
+    pub fn remove_weight(&mut self, path: &ParamPath) {
+        self.anim_weights.remove(path);
+    }
+
+    /// Store a quaternion snapshot for smooth mode transitions (drift ↔ fixed).
+    pub fn set_prev_mode_quat(&mut self, q: Option<[f64; 4]>) {
+        self.prev_mode_quat = q;
     }
 
     /// Advance all weights toward their targets. Clean up entries at default (1.0).
@@ -138,9 +171,9 @@ impl AnimationEngine {
         dt: f64,
         wall_dt: f64,
     ) -> (FrameState, Vec<TransitionAction>) {
-        // 1. Advance master phase
-        self.master_phase =
-            (self.master_phase + dt * safe_ratio(preset.tempo.value)) % 1.0;
+        // 1. Advance master phase (unbounded — each param's modular arithmetic
+        //    handles its own phase wrapping, so fractional ratios work correctly)
+        self.master_phase += dt * safe_ratio(preset.tempo.value);
 
         // 2. Advance wall clock and weights
         self.wall_clock += wall_dt;
@@ -156,7 +189,7 @@ impl AnimationEngine {
         let op_resolved = self.resolve_pipeline_layers(preset, PipelineKind::Operations);
         let lift_resolved = self.resolve_pipeline_layers(preset, PipelineKind::Lift);
         let camera_resolved = self.resolve_camera_values(preset);
-        let (quat_angle, quat_axis) = self.resolve_quaternion_values(preset);
+        let (quat_angle, quat_axis, quat) = self.resolve_quaternion_values(preset);
         let sampling_resolved = self.resolve_sampling_values(preset);
 
         // 6. Build FrameState
@@ -167,6 +200,7 @@ impl AnimationEngine {
             &camera_resolved,
             quat_angle,
             quat_axis,
+            quat,
             &sampling_resolved,
         );
 
@@ -274,13 +308,59 @@ impl AnimationEngine {
         }
     }
 
+    /// Resolve a ToggleParam using two independent weight channels:
+    ///
+    /// 1. **Toggle weight** (`view_key` path): blends neutral ↔ active (on/off toggle)
+    /// 2. **Anim weight** (`view_key.anim` path): blends static ↔ animated (anim toggle)
+    ///
+    /// These are separate so toggling on/off and toggling anim don't interfere.
     fn resolve_toggle_param(&self, tp: &ToggleParam, view_key: &str) -> f64 {
-        if !tp.on {
-            return tp.param.value;
+        let toggle_path = ParamPath::View(view_key.to_string());
+        let anim_path = ParamPath::View(format!("{}.anim", view_key));
+        let neutral = Self::neutral_view_value(view_key);
+
+        if !tp.on && !self.has_weight(&toggle_path) {
+            return neutral;
         }
-        let path = ParamPath::View(view_key.to_string());
-        let weight = self.get_weight(&path);
-        resolve_param(&tp.param, self.master_phase, weight)
+
+        let toggle_weight = self.get_weight(&toggle_path);
+        let anim_weight = self.get_weight(&anim_path);
+
+        // Resolve active value: uses anim_weight to blend static ↔ animated
+        let active_value = resolve_param(&tp.param, self.master_phase, anim_weight);
+
+        // Blend between neutral and active using toggle weight
+        if toggle_weight >= 1.0 {
+            active_value
+        } else if toggle_weight <= 0.0 {
+            neutral
+        } else {
+            (1.0 - toggle_weight) * neutral + toggle_weight * active_value
+        }
+    }
+
+    /// Canonical neutral/rest value for each view param.
+    /// These match the Preset::default() values — the "identity" camera state.
+    pub fn neutral_view_value(view_key: &str) -> f64 {
+        match view_key {
+            "camera.position.orbitX" => 0.0,
+            "camera.position.orbitY" => 0.1,
+            "camera.position.distance" => 3.5,
+            "camera.position.targetX" => 0.0,
+            "camera.position.targetY" => 0.0,
+            "camera.position.roll" => 0.0,
+            "camera.lens.focalLength" => 35.0,
+            "camera.lens.sensorSize" => 36.0,
+            "camera.lens.orthoZoom" => 2.0,
+            "camera.lens.anamorphic" => 1.0,
+            "camera.lens.shiftX" => 0.0,
+            "camera.lens.shiftY" => 0.0,
+            "camera.distortion.k1" => 0.0,
+            "camera.distortion.k2" => 0.0,
+            "sampling.scale" => 0.6,
+            "sampling.density" => 27.0,
+            _ => 0.0,
+        }
     }
 
     // =========================================================================
@@ -298,17 +378,27 @@ impl AnimationEngine {
     // Quaternion resolution
     // =========================================================================
 
-    fn resolve_quaternion_values(&self, preset: &Preset) -> (f64, [f64; 3]) {
+    /// Resolve quaternion values. Returns:
+    /// - `angle`: resolved angle param value (for UI display)
+    /// - `axis`: resolved axis values (for UI display)
+    /// - `quat`: final [w,x,y,z] for rendering
+    fn resolve_quaternion_values(&self, preset: &Preset) -> (f64, [f64; 3], [f64; 4]) {
         let q = &preset.quaternion;
-        if !q.on {
-            return (q.angle.value, [q.ax.value, q.ay.value, q.az.value]);
-        }
 
-        // Angle — resolve as a normal param via master phase
+        // Quaternion blend weight: drives smooth on/off transitions.
+        let quat_blend_path = ParamPath::View("quaternion.blend".to_string());
+        let quat_blend = if self.has_weight(&quat_blend_path) {
+            self.get_weight(&quat_blend_path)
+        } else if q.on {
+            1.0
+        } else {
+            0.0
+        };
+
+        // Resolve angle and axis
         let angle_weight = self.get_weight(&ParamPath::View("quaternion.angle".to_string()));
-        let angle = resolve_param(&q.angle, self.master_phase, angle_weight);
+        let resolved_angle = resolve_param(&q.angle, self.master_phase, angle_weight);
 
-        // Axes
         let axis = match q.mode {
             QuaternionMode::Drift => {
                 let t = self.drift_phase;
@@ -329,7 +419,28 @@ impl AnimationEngine {
             }
         };
 
-        (angle, axis)
+        if quat_blend <= 1e-12 {
+            return (resolved_angle, axis, [1.0, 0.0, 0.0, 0.0]);
+        }
+
+        // Build target quaternion from axis-angle, scaled by blend.
+        // Uses the wrapped angle (bounded in [min, max]) so that angle*blend
+        // is at most TAU — no multi-rotation spinning during blend transitions.
+        let effective_angle = resolved_angle * quat_blend;
+        let mut final_quat = axis_angle_to_quat(effective_angle, axis);
+
+        // Smooth drift↔fixed mode transition via NLERP
+        let mode_blend_path = ParamPath::View("quaternion.mode_blend".to_string());
+        if let Some(prev_q) = self.prev_mode_quat {
+            if self.has_weight(&mode_blend_path) {
+                let t = self.get_weight(&mode_blend_path);
+                if t < 1.0 - 1e-12 {
+                    final_quat = nlerp(prev_q, final_quat, t);
+                }
+            }
+        }
+
+        (resolved_angle, axis, final_quat)
     }
 
     // =========================================================================
@@ -344,6 +455,7 @@ impl AnimationEngine {
         camera_resolved: &CameraResolved,
         quat_angle: f64,
         quat_axis: [f64; 3],
+        quat: [f64; 4],
         sampling_resolved: &SamplingResolved,
     ) -> FrameState {
         let operations: Vec<FlatLayerState> = op_resolved
@@ -412,7 +524,15 @@ impl AnimationEngine {
             shift_y,
             k1,
             k2,
-            quat_on: preset.quaternion.on,
+            quat_on: {
+                let qp = ParamPath::View("quaternion.blend".to_string());
+                if self.has_weight(&qp) {
+                    self.get_weight(&qp) > 1e-6
+                } else {
+                    preset.quaternion.on
+                }
+            },
+            quat,
             quat_angle,
             quat_axis,
             scale: sampling_resolved.scale,
@@ -649,6 +769,39 @@ impl AnimationEngine {
 impl Default for AnimationEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =============================================================================
+// Quaternion helpers
+// =============================================================================
+
+/// Convert axis-angle to quaternion [w, x, y, z].
+fn axis_angle_to_quat(angle: f64, axis: [f64; 3]) -> [f64; 4] {
+    let len = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if len < 1e-12 {
+        return [1.0, 0.0, 0.0, 0.0];
+    }
+    let half = angle / 2.0;
+    let (s, c) = half.sin_cos();
+    let n = s / len;
+    [c, axis[0] * n, axis[1] * n, axis[2] * n]
+}
+
+/// Normalized linear interpolation between two quaternions.
+/// Uses shortest-path (negates if dot < 0). Suitable for short transitions.
+fn nlerp(q1: [f64; 4], q2: [f64; 4], t: f64) -> [f64; 4] {
+    let dot = q1[0] * q2[0] + q1[1] * q2[1] + q1[2] * q2[2] + q1[3] * q2[3];
+    let sign = if dot < 0.0 { -1.0 } else { 1.0 };
+    let w = (1.0 - t) * q1[0] + t * sign * q2[0];
+    let x = (1.0 - t) * q1[1] + t * sign * q2[1];
+    let y = (1.0 - t) * q1[2] + t * sign * q2[2];
+    let z = (1.0 - t) * q1[3] + t * sign * q2[3];
+    let len = (w * w + x * x + y * y + z * z).sqrt();
+    if len < 1e-12 {
+        [1.0, 0.0, 0.0, 0.0]
+    } else {
+        [w / len, x / len, y / len, z / len]
     }
 }
 
@@ -988,5 +1141,207 @@ mod tests {
         let engine = AnimationEngine::new();
         let path = ParamPath::View("nonexistent".to_string());
         assert_near(engine.get_weight(&path), 1.0, 1e-15);
+    }
+
+    // ================================================================
+    // Bug reproduction tests
+    // ================================================================
+
+    /// BUG: orbit_x jumps when anim is enabled.
+    /// The toggle weight (on/off) and anim weight share the same path.
+    /// When anim is enabled, we skip the weight transition for ToggleParams
+    /// (to avoid conflicting with toggle weight), so anim switches instantly
+    /// from static value to animated value — producing a jump.
+    ///
+    /// FIX: resolve_toggle_param should use a SEPARATE weight path for
+    /// anim blending (".anim" suffix), so both systems work independently.
+    #[test]
+    fn camera_anim_enable_should_not_jump() {
+        let mut preset = Preset::default();
+        // orbit_x: on=true, anim=false, value=0.0
+        assert!(preset.camera.position.orbit_x.on);
+        assert!(!preset.camera.position.orbit_x.param.anim);
+
+        let mut engine = AnimationEngine::new();
+
+        // Run a few frames to get a stable master_phase
+        for _ in 0..60 {
+            engine.tick(&preset, 1.0 / 60.0, 1.0 / 60.0);
+        }
+
+        // Capture pre-anim orbit_x value
+        let (frame_before, _) = engine.tick(&preset, 1.0 / 60.0, 1.0 / 60.0);
+        let before = frame_before.orbit_x;
+
+        // Enable anim — simulates what SetParamAnim does
+        preset.camera.position.orbit_x.param.anim = true;
+        // For ToggleParams, the anim weight should use a separate ".anim" path
+        let anim_path = ParamPath::View("camera.position.orbitX.anim".to_string());
+        engine.start_weight_transition(anim_path, 0.0, 1.0, 0.3);
+
+        // Next frame: orbit_x should be close to before (weight ≈ 0, still static)
+        let (frame_after, _) = engine.tick(&preset, 1.0 / 60.0, 1.0 / 60.0);
+        let after = frame_after.orbit_x;
+        let jump = (after - before).abs();
+        // The first frame will advance the weight by ~dt/0.3 ≈ 0.055, so a small
+        // blend step is expected. The bug was a jump of ~1.95 rad (instant switch).
+        assert!(
+            jump < 0.5,
+            "orbit_x jumped by {jump} when anim was enabled (before={before}, after={after})"
+        );
+    }
+
+    /// BUG: orbit_y with ratio=1/phi doesn't complete a full sawtooth cycle.
+    /// Because master_phase wraps at 1.0, and orbit_y's phase is
+    /// (master_phase * 0.618) — when master wraps, the phase jumps from
+    /// 0.618 back to 0.0 instead of continuing to 1.0.
+    ///
+    /// FIX: master_phase should NOT wrap at 1.0. Let it grow unbounded.
+    /// Each param's modular arithmetic handles its own phase wrapping.
+    #[test]
+    fn sawtooth_fractional_ratio_no_discontinuity() {
+        let mut preset = Preset::default();
+        preset.camera.position.orbit_y.on = true;
+        preset.camera.position.orbit_y.param.anim = true;
+        preset.camera.position.orbit_y.param.shape = ShapeFunction::Sawtooth;
+        // ratio=1/phi ≈ 0.618 — takes ~1.618 master cycles to complete one param cycle
+        preset.camera.position.orbit_y.param.ratio = 1.0 / 1.618033988749895;
+
+        let mut engine = AnimationEngine::new();
+        let dt = 1.0 / 60.0;
+        let mut prev_orbit_y = None;
+        let mut max_jump = 0.0_f64;
+
+        // Run for 5 seconds (300 frames) — should cross master_phase=1.0 multiple times
+        for _ in 0..300 {
+            let (frame, _) = engine.tick(&preset, dt, dt);
+            if let Some(prev) = prev_orbit_y {
+                let diff: f64 = frame.orbit_y - prev;
+                let jump = diff.abs();
+                max_jump = max_jump.max(jump);
+            }
+            prev_orbit_y = Some(frame.orbit_y);
+        }
+
+        // With sawtooth and ratio < 1, a continuous ramp should have small
+        // frame-to-frame deltas. The master_phase wrapping bug would cause
+        // jumps of ~0.6 * (max-min) ≈ 1.8 radians.
+        let range = preset.camera.position.orbit_y.param.max
+            - preset.camera.position.orbit_y.param.min;
+        assert!(
+            max_jump < range * 0.05,
+            "orbit_y had discontinuity: max frame-to-frame jump was {max_jump} \
+             (range={range}, threshold={})",
+            range * 0.05
+        );
+    }
+
+    /// Verify quaternion rotation is smooth at steady state (blend=1.0).
+    /// The sawtooth angle wraps from TAU to 0, but the quaternion
+    /// representation makes this visually smooth (TAU and 0 are
+    /// the same rotation).
+    #[test]
+    fn quat_steady_state_no_discontinuity() {
+        let mut preset = Preset::default();
+        preset.quaternion.on = true;
+        preset.quaternion.angle.anim = true;
+        preset.quaternion.angle.shape = ShapeFunction::Sawtooth;
+        preset.quaternion.angle.ratio = 1.0;
+        preset.quaternion.mode = QuaternionMode::Fixed;
+        preset.quaternion.ax.value = 0.0;
+        preset.quaternion.ax.anim = false;
+        preset.quaternion.ay.value = 1.0;
+        preset.quaternion.ay.anim = false;
+        preset.quaternion.az.value = 0.0;
+        preset.quaternion.az.anim = false;
+        preset.tempo.value = 1.0; // fast tempo to hit wrap point quickly
+
+        let mut engine = AnimationEngine::new();
+        // blend=1.0 (steady state, no transition)
+
+        let dt = 1.0 / 60.0;
+        let mut prev_quat: Option<[f64; 4]> = None;
+        let mut max_angular_jump = 0.0_f64;
+
+        // Run for 3 seconds — should cross the angle wrap point multiple times
+        for _ in 0..180 {
+            let (frame, _) = engine.tick(&preset, dt, dt);
+            if let Some(prev) = prev_quat {
+                // Quaternion angular distance: 2 * acos(|q1 · q2|)
+                let dot = (prev[0] * frame.quat[0]
+                    + prev[1] * frame.quat[1]
+                    + prev[2] * frame.quat[2]
+                    + prev[3] * frame.quat[3])
+                    .abs()
+                    .min(1.0);
+                let angular_dist = 2.0 * dot.acos();
+                max_angular_jump = max_angular_jump.max(angular_dist);
+            }
+            prev_quat = Some(frame.quat);
+        }
+
+        // At blend=1.0, axis_angle_to_quat is smooth across the sawtooth wrap
+        // because sin/cos are periodic (TAU rotation = identity = 0 rotation).
+        // Max per-frame step should be proportional to dt * tempo * TAU.
+        assert!(
+            max_angular_jump < 0.5,
+            "quaternion had discontinuity at steady state: max jump was {max_angular_jump} rad"
+        );
+    }
+
+    /// Verify that the blend transition doesn't cause multi-rotation spinning.
+    /// The wrapped angle approach limits per-frame rotation to at most one cycle,
+    /// unlike the continuous-angle approach which would cause dozens of spins.
+    #[test]
+    fn quat_blend_no_multi_spin() {
+        let mut preset = Preset::default();
+        preset.quaternion.on = true;
+        preset.quaternion.angle.anim = true;
+        preset.quaternion.angle.shape = ShapeFunction::Sawtooth;
+        preset.quaternion.angle.ratio = 1.0;
+        preset.quaternion.mode = QuaternionMode::Fixed;
+        preset.quaternion.ay.value = 1.0;
+        preset.tempo.value = 0.3;
+
+        let mut engine = AnimationEngine::new();
+        // Run for 10 seconds to accumulate many rotations
+        let dt = 1.0 / 60.0;
+        for _ in 0..600 {
+            engine.tick(&preset, dt, dt);
+        }
+
+        // Now toggle quat ON with a blend transition
+        let blend_path = ParamPath::View("quaternion.blend".to_string());
+        engine.start_weight_transition(blend_path, 0.0, 1.0, 0.3);
+
+        let mut prev_quat: Option<[f64; 4]> = None;
+        let mut total_angular_travel = 0.0_f64;
+
+        // Track total angular distance over the 0.3s blend transition
+        for _ in 0..18 {
+            // 18 frames at 60fps = 0.3s
+            let (frame, _) = engine.tick(&preset, dt, dt);
+            if let Some(prev) = prev_quat {
+                let dot = (prev[0] * frame.quat[0]
+                    + prev[1] * frame.quat[1]
+                    + prev[2] * frame.quat[2]
+                    + prev[3] * frame.quat[3])
+                    .abs()
+                    .min(1.0);
+                let angular_dist = 2.0 * dot.acos();
+                total_angular_travel += angular_dist;
+            }
+            prev_quat = Some(frame.quat);
+        }
+
+        // With the wrapped approach, total rotation during blend should be
+        // at most ~TAU (one full turn). The continuous approach would give
+        // ~10*TAU (ten turns) which looks like wild spinning.
+        assert!(
+            total_angular_travel < TAU * 2.0,
+            "blend transition caused excessive spinning: total={total_angular_travel:.2} rad \
+             ({:.1} rotations)",
+            total_angular_travel / TAU
+        );
     }
 }
