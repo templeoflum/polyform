@@ -7,7 +7,7 @@ use crate::animation::PipelineKind;
 // =============================================================================
 
 /// What a transition is animating.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TransitionTarget {
     LayerBlend {
         kind: PipelineKind,
@@ -23,6 +23,12 @@ pub enum TransitionAction {
     DisableLayer {
         kind: PipelineKind,
         layer_id: String,
+    },
+    /// Restore blend.value in the preset after a fade-in transition completes.
+    RestoreBlendValue {
+        kind: PipelineKind,
+        layer_id: String,
+        value: f64,
     },
 }
 
@@ -145,6 +151,11 @@ impl TransitionManager {
     /// Number of active (in-flight) transitions.
     pub fn active_count(&self) -> usize {
         self.transitions.len()
+    }
+
+    /// Check if there is an active transition for the given target.
+    pub fn has_active(&self, target: &TransitionTarget) -> bool {
+        self.transitions.iter().any(|t| &t.target == target)
     }
 }
 

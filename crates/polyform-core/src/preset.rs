@@ -172,52 +172,8 @@ pub struct Camera {
 }
 
 // =============================================================================
-// Quaternion tumble
+// Quaternion tumble — now uses full Param for angle and axes
 // =============================================================================
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuaternionAxis {
-    pub value: f64,
-    #[serde(default)]
-    pub anim: bool,
-    #[serde(default = "default_ratio_one")]
-    pub ratio: f64,
-}
-
-fn default_ratio_one() -> f64 {
-    1.0
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QuaternionAxes {
-    pub ax: QuaternionAxis,
-    pub ay: QuaternionAxis,
-    pub az: QuaternionAxis,
-}
-
-impl Default for QuaternionAxes {
-    fn default() -> Self {
-        Self {
-            ax: QuaternionAxis {
-                value: 0.5,
-                anim: false,
-                ratio: PHI,
-            },
-            ay: QuaternionAxis {
-                value: 1.0,
-                anim: false,
-                ratio: 1.0,
-            },
-            az: QuaternionAxis {
-                value: 0.3,
-                anim: false,
-                ratio: 1.0 / PHI,
-            },
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -226,14 +182,14 @@ pub struct Quaternion {
     pub on: bool,
     #[serde(default = "default_quat_mode")]
     pub mode: QuaternionMode,
-    #[serde(default = "default_true")]
-    pub anim: bool,
-    #[serde(default)]
-    pub angle: f64,
-    #[serde(default = "default_ratio_one")]
-    pub angle_ratio: f64,
-    #[serde(default)]
-    pub axes: QuaternionAxes,
+    #[serde(default = "default_quat_angle")]
+    pub angle: Param,
+    #[serde(default = "default_quat_ax")]
+    pub ax: Param,
+    #[serde(default = "default_quat_ay")]
+    pub ay: Param,
+    #[serde(default = "default_quat_az")]
+    pub az: Param,
     #[serde(default = "default_drift_speed")]
     pub drift_speed: f64,
 }
@@ -242,12 +198,30 @@ fn default_quat_mode() -> QuaternionMode {
     QuaternionMode::Fixed
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_drift_speed() -> f64 {
     0.1
+}
+
+fn default_quat_angle() -> Param {
+    let mut p = Param::new(0.0, 0.0, std::f64::consts::TAU, true);
+    p.anim = true;
+    p
+}
+
+fn default_quat_ax() -> Param {
+    let mut p = Param::new(0.5, -1.0, 1.0, false);
+    p.ratio = PHI;
+    p
+}
+
+fn default_quat_ay() -> Param {
+    Param::new(1.0, -1.0, 1.0, false)
+}
+
+fn default_quat_az() -> Param {
+    let mut p = Param::new(0.3, -1.0, 1.0, false);
+    p.ratio = 1.0 / PHI;
+    p
 }
 
 impl Default for Quaternion {
@@ -255,10 +229,10 @@ impl Default for Quaternion {
         Self {
             on: false,
             mode: QuaternionMode::Fixed,
-            anim: true,
-            angle: 0.0,
-            angle_ratio: 1.0,
-            axes: QuaternionAxes::default(),
+            angle: default_quat_angle(),
+            ax: default_quat_ax(),
+            ay: default_quat_ay(),
+            az: default_quat_az(),
             drift_speed: 0.1,
         }
     }
@@ -301,6 +275,10 @@ pub struct Display {
     pub show_param_values: bool,
     #[serde(default)]
     pub show_fps: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Display {
@@ -359,7 +337,7 @@ fn default_tempo() -> Param {
 }
 
 fn default_palette() -> String {
-    "acid".into()
+    "phosphor".into()
 }
 
 impl Default for Preset {
@@ -370,7 +348,7 @@ impl Default for Preset {
             metadata: Metadata::default(),
             tempo: default_tempo(),
             defaults: Defaults::default(),
-            palette: "acid".into(),
+            palette: "phosphor".into(),
             pipeline: Pipeline::default(),
             camera: Camera::default(),
             quaternion: Quaternion::default(),

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::layer::Layer;
 use crate::preset::Preset;
 use crate::registry::Registry;
-use crate::types::{default_blend, AnimMode, Param};
+use crate::types::{default_blend, Param, PhaseModulator, ShapeFunction};
 
 // =============================================================================
 // Public types
@@ -310,7 +310,7 @@ fn validate_preset_value(value: &serde_json::Value) -> (Preset, Vec<String>) {
 
     // palette
     if let Some(v) = obj.get("palette") {
-        preset.palette = as_string(v, "acid");
+        preset.palette = as_string(v, "phosphor");
     }
 
     // pipeline
@@ -450,29 +450,60 @@ fn read_param(
         .map(|v| as_f64(v, fallback.max, warnings, &format!("{path}.max")))
         .unwrap_or(fallback.max);
     let anim = obj.get("anim").map(|v| as_bool(v, false)).unwrap_or(false);
-    let anim_mode = obj
-        .get("animMode")
-        .and_then(|v| v.as_str())
-        .map(|s| match s {
-            "loop" => AnimMode::Loop,
-            _ => AnimMode::Sweep,
-        })
-        .unwrap_or(AnimMode::Sweep);
     let ratio = obj
         .get("ratio")
         .map(|v| as_f64(v, 1.0, warnings, &format!("{path}.ratio")))
         .unwrap_or(1.0);
-    let phase_offset = obj.get("phaseOffset").and_then(|v| {
+    let offset = obj
+        .get("offset")
+        .map(|v| as_f64(v, 0.0, warnings, &format!("{path}.offset")))
+        .unwrap_or(0.0);
+
+    // Shape: read from "shape" field, or migrate from legacy "animMode"
+    let shape = if let Some(v) = obj.get("shape") {
+        v.as_str()
+            .map(|s| match s {
+                "sawtooth" => ShapeFunction::Sawtooth,
+                _ => ShapeFunction::Cosine,
+            })
+            .unwrap_or(fallback.shape)
+    } else if let Some(v) = obj.get("animMode") {
+        // Legacy migration: loop -> Sawtooth, sweep -> Cosine
+        v.as_str()
+            .map(|s| match s {
+                "loop" => ShapeFunction::Sawtooth,
+                _ => ShapeFunction::Cosine,
+            })
+            .unwrap_or(fallback.shape)
+    } else {
+        fallback.shape
+    };
+
+    // Modulator: read from "modulator" field if present
+    let modulator = obj.get("modulator").and_then(|v| {
         if v.is_null() {
             None
+        } else if let Some(m) = v.as_object() {
+            let m_ratio = m.get("ratio")
+                .map(|v| as_f64(v, 1.0, warnings, &format!("{path}.modulator.ratio")))
+                .unwrap_or(1.0);
+            let m_depth = m.get("depth")
+                .map(|v| as_f64(v, 0.0, warnings, &format!("{path}.modulator.depth")))
+                .unwrap_or(0.0);
+            let m_shape = m.get("shape")
+                .and_then(|v| v.as_str())
+                .map(|s| match s {
+                    "sawtooth" => ShapeFunction::Sawtooth,
+                    _ => ShapeFunction::Cosine,
+                })
+                .unwrap_or(ShapeFunction::Cosine);
+            Some(PhaseModulator {
+                ratio: m_ratio,
+                depth: m_depth,
+                shape: m_shape,
+            })
         } else {
-            let default_po = Param::default_phase_offset();
-            Some(Box::new(read_param(
-                v,
-                &default_po,
-                warnings,
-                &format!("{path}.phaseOffset"),
-            )))
+            None
         }
     });
 
@@ -481,9 +512,10 @@ fn read_param(
         min,
         max,
         anim,
-        anim_mode,
         ratio,
-        phase_offset,
+        offset,
+        shape,
+        modulator,
     }
 }
 
@@ -646,7 +678,7 @@ mod tests {
         assert_eq!(theta.value, 0.0);
         assert_eq!(theta.min, 0.0);
         assert_eq!(theta.max, std::f64::consts::PI * 2.0);
-        assert_eq!(theta.anim_mode, AnimMode::Loop); // periodic
+        assert_eq!(theta.shape, crate::types::ShapeFunction::Sawtooth); // periodic
         assert!(result.warnings.is_empty());
     }
 
@@ -685,7 +717,7 @@ mod tests {
         let result = import_preset_json("{}", &registry).unwrap();
         assert_eq!(result.preset.schema, "polyform.preset");
         assert_eq!(result.preset.version, 1);
-        assert_eq!(result.preset.palette, "acid");
+        assert_eq!(result.preset.palette, "phosphor");
         assert!(result.preset.pipeline.operations.is_empty());
         assert!(result.preset.pipeline.lift.is_empty());
         assert!(result.warnings.is_empty());
@@ -756,7 +788,7 @@ mod tests {
         assert!(layer.params.contains_key("amp"));
         assert!(layer.params.contains_key("freq"));
         assert!(layer.params.contains_key("phase"));
-        assert_eq!(layer.params["phase"].anim_mode, AnimMode::Loop); // periodic
+        assert_eq!(layer.params["phase"].shape, crate::types::ShapeFunction::Sawtooth); // periodic
 
         // Unknown
         assert!(make_layer("nonExistent", &registry).is_none());

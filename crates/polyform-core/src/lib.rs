@@ -10,6 +10,7 @@ pub mod notation;
 pub mod preset_io;
 pub mod animation;
 pub mod transition;
+pub mod frame_state;
 pub mod engine;
 
 #[cfg(test)]

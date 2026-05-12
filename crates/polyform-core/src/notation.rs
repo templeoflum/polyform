@@ -249,10 +249,8 @@ pub fn count_dofs(
         if layer.blend.anim {
             t += 1;
         }
-        if let Some(ref po) = layer.blend.phase_offset {
-            if po.anim {
-                t += 1;
-            }
+        if layer.blend.modulator.as_ref().is_some_and(|m| m.depth.abs() > 0.0) {
+            t += 1;
         }
 
         // Check param animations
@@ -260,10 +258,8 @@ pub fn count_dofs(
             if param.anim {
                 t += 1;
             }
-            if let Some(ref po) = param.phase_offset {
-                if po.anim {
-                    t += 1;
-                }
+            if param.modulator.as_ref().is_some_and(|m| m.depth.abs() > 0.0) {
+                t += 1;
             }
         }
 
@@ -291,20 +287,16 @@ pub fn count_dofs(
         if layer.blend.anim {
             t += 1;
         }
-        if let Some(ref po) = layer.blend.phase_offset {
-            if po.anim {
-                t += 1;
-            }
+        if layer.blend.modulator.as_ref().is_some_and(|m| m.depth.abs() > 0.0) {
+            t += 1;
         }
 
         for param in layer.params.values() {
             if param.anim {
                 t += 1;
             }
-            if let Some(ref po) = param.phase_offset {
-                if po.anim {
-                    t += 1;
-                }
+            if param.modulator.as_ref().is_some_and(|m| m.depth.abs() > 0.0) {
+                t += 1;
             }
         }
 

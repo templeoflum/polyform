@@ -104,7 +104,7 @@ fn default_values_match_js() {
     assert_eq!(p.defaults.blend_time, 1.0);
 
     // Palette
-    assert_eq!(p.palette, "acid");
+    assert_eq!(p.palette, "phosphor");
 
     // Pipeline
     assert!(p.pipeline.operations.is_empty());
@@ -139,13 +139,13 @@ fn default_values_match_js() {
 
     // Quaternion
     assert!(!p.quaternion.on);
-    assert!(p.quaternion.anim);
-    assert_eq!(p.quaternion.angle, 0.0);
-    assert_eq!(p.quaternion.axes.ax.value, 0.5);
-    assert!((p.quaternion.axes.ax.ratio - crate::types::PHI).abs() < 1e-15);
-    assert_eq!(p.quaternion.axes.ay.value, 1.0);
-    assert_eq!(p.quaternion.axes.az.value, 0.3);
-    assert!((p.quaternion.axes.az.ratio - inv_phi).abs() < 1e-15);
+    assert!(p.quaternion.angle.anim);
+    assert_eq!(p.quaternion.angle.value, 0.0);
+    assert_eq!(p.quaternion.ax.value, 0.5);
+    assert!((p.quaternion.ax.ratio - crate::types::PHI).abs() < 1e-15);
+    assert_eq!(p.quaternion.ay.value, 1.0);
+    assert_eq!(p.quaternion.az.value, 0.3);
+    assert!((p.quaternion.az.ratio - inv_phi).abs() < 1e-15);
     assert_eq!(p.quaternion.drift_speed, 0.1);
 
     // Sampling
@@ -206,7 +206,7 @@ fn deserialize_js_fixture() {
 
     // Verify quaternion
     assert!(!preset.quaternion.on);
-    assert!(preset.quaternion.anim);
+    assert!(preset.quaternion.angle.anim);
 }
 
 // =============================================================================
@@ -246,13 +246,13 @@ fn serialized_json_structure() {
     assert!(orbit_x["min"].is_number());
     assert!(orbit_x["max"].is_number());
     assert!(orbit_x["anim"].is_boolean());
-    assert!(orbit_x["animMode"].is_string());
+    assert!(orbit_x["shape"].is_string());
     assert!(orbit_x["ratio"].is_number());
 
-    // Layer blend should not have phaseOffset when None
+    // Layer blend should not have modulator when None
     // (this is for the empty preset which has no layers, so check via a constructed value)
     let blend_json = serde_json::to_value(crate::types::default_blend()).unwrap();
-    assert!(blend_json.get("phaseOffset").is_none());
+    assert!(blend_json.get("modulator").is_none());
 }
 
 // =============================================================================
