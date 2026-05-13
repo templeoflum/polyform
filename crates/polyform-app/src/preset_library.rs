@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use polyform_core::factory_presets::factory_presets;
+use polyform_core::factory_section_presets::factory_section_presets;
 use polyform_core::preset_io::{
     PresetFile, PresetKind, export_preset_file_json, import_preset_file_json,
 };
@@ -25,7 +26,10 @@ pub fn ensure_library_dirs() -> Option<PathBuf> {
         PresetKind::Full,
         PresetKind::Operations,
         PresetKind::Lift,
-        PresetKind::Camera,
+        PresetKind::Position,
+        PresetKind::Lens,
+        PresetKind::Distortion,
+        PresetKind::Quaternion,
         PresetKind::Phosphor,
         PresetKind::Sampling,
     ];
@@ -86,6 +90,17 @@ pub fn install_factory_presets() {
         let path = full_dir.join(format!("{name}.json"));
         if let Err(e) = std::fs::write(&path, &json) {
             eprintln!("Failed to write factory preset \"{name}\": {e}");
+        }
+    }
+
+    // Install factory section presets
+    let section_presets = factory_section_presets();
+    for (name, file) in section_presets {
+        let dir = root.join(file.kind().dir_name());
+        let json = export_preset_file_json(&file, true);
+        let path = dir.join(format!("{name}.json"));
+        if let Err(e) = std::fs::write(&path, &json) {
+            eprintln!("Failed to write factory section preset \"{name}\": {e}");
         }
     }
 }

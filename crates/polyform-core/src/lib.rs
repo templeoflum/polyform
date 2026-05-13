@@ -14,6 +14,7 @@ pub mod frame_state;
 pub mod morph;
 pub mod engine;
 pub mod factory_presets;
+pub mod factory_section_presets;
 
 #[cfg(test)]
 mod tests;

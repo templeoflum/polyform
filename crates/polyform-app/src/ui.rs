@@ -722,10 +722,7 @@ fn camera_position_lens_section(
     frame_state: Option<&FrameState>,
     actions: &mut Vec<UiAction>,
 ) {
-    ui.horizontal(|ui| {
-        ui.strong("Camera");
-        section_preset_buttons(ui, PresetKind::Camera, actions, "sec_camera");
-    });
+    ui.strong("Camera");
 
     // Position
     let pos = &preset.camera.position;
@@ -737,7 +734,7 @@ fn camera_position_lens_section(
     let pos_any_on = pos.orbit_x.on || pos.orbit_y.on || pos.distance.on
         || pos.target_x.on || pos.target_y.on || pos.roll.on;
 
-    if section_with_toggle(ui, "sec_position", "Position", true, pos_any_on, pos_keys, actions, Some(PresetKind::Camera)) {
+    if section_with_toggle(ui, "sec_position", "Position", true, pos_any_on, pos_keys, actions, Some(PresetKind::Position)) {
         compact_toggle_param_widget(ctx, ui, "orbit x", &pos.orbit_x, "camera.position.orbitX", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "orbit y", &pos.orbit_y, "camera.position.orbitY", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "distance", &pos.distance, "camera.position.distance", frame_state, actions);
@@ -756,7 +753,7 @@ fn camera_position_lens_section(
     let lens_any_on = lens.focal_length.on || lens.sensor_size.on || lens.ortho_zoom.on
         || lens.anamorphic.on || lens.shift_x.on || lens.shift_y.on;
 
-    if section_with_toggle(ui, "sec_lens", "Lens", true, lens_any_on, lens_keys, actions, Some(PresetKind::Camera)) {
+    if section_with_toggle(ui, "sec_lens", "Lens", true, lens_any_on, lens_keys, actions, Some(PresetKind::Lens)) {
         ui.horizontal(|ui| {
             let proj = preset.camera.lens.projection;
             if ui.selectable_label(proj == ProjectionMode::Perspective, "Persp").clicked() && proj != ProjectionMode::Perspective {
@@ -794,7 +791,7 @@ fn camera_distortion_quat_section(
     let dist_any_on = dist.k1.on || dist.k2.on || dist.k3.on || dist.k4.on
         || dist.p1.on || dist.p2.on || dist.center_x.on || dist.center_y.on || dist.squeeze.on;
 
-    if section_with_toggle(ui, "sec_distortion", "Distortion", false, dist_any_on, dist_keys, actions, Some(PresetKind::Camera)) {
+    if section_with_toggle(ui, "sec_distortion", "Distortion", false, dist_any_on, dist_keys, actions, Some(PresetKind::Distortion)) {
         compact_toggle_param_widget(ctx, ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);
@@ -824,6 +821,7 @@ fn camera_distortion_quat_section(
                 state.toggle(ui);
             }
             ui.strong("Quaternion");
+            section_preset_buttons(ui, PresetKind::Quaternion, actions, "sec_quat");
         });
         if state.is_open() && q.on {
             ui.horizontal(|ui| {
@@ -1061,7 +1059,7 @@ fn camera_column(
     let pos_any_on = pos.orbit_x.on || pos.orbit_y.on || pos.distance.on
         || pos.target_x.on || pos.target_y.on || pos.roll.on;
 
-    if section_with_toggle(ui, "sec_position", "Position", true, pos_any_on, pos_keys, actions, Some(PresetKind::Camera)) {
+    if section_with_toggle(ui, "sec_position", "Position", true, pos_any_on, pos_keys, actions, Some(PresetKind::Position)) {
         compact_toggle_param_widget(ctx, ui, "orbit x", &pos.orbit_x, "camera.position.orbitX", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "orbit y", &pos.orbit_y, "camera.position.orbitY", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "distance", &pos.distance, "camera.position.distance", frame_state, actions);
@@ -1080,7 +1078,7 @@ fn camera_column(
     let lens_any_on = lens.focal_length.on || lens.sensor_size.on || lens.ortho_zoom.on
         || lens.anamorphic.on || lens.shift_x.on || lens.shift_y.on;
 
-    if section_with_toggle(ui, "sec_lens", "Lens", true, lens_any_on, lens_keys, actions, Some(PresetKind::Camera)) {
+    if section_with_toggle(ui, "sec_lens", "Lens", true, lens_any_on, lens_keys, actions, Some(PresetKind::Lens)) {
         ui.horizontal(|ui| {
             let proj = preset.camera.lens.projection;
             if ui.selectable_label(proj == ProjectionMode::Perspective, "Persp").clicked() && proj != ProjectionMode::Perspective {
@@ -1110,7 +1108,7 @@ fn camera_column(
     let dist_any_on = dist.k1.on || dist.k2.on || dist.k3.on || dist.k4.on
         || dist.p1.on || dist.p2.on || dist.center_x.on || dist.center_y.on || dist.squeeze.on;
 
-    if section_with_toggle(ui, "sec_distortion", "Distortion", false, dist_any_on, dist_keys, actions, Some(PresetKind::Camera)) {
+    if section_with_toggle(ui, "sec_distortion", "Distortion", false, dist_any_on, dist_keys, actions, Some(PresetKind::Distortion)) {
         compact_toggle_param_widget(ctx, ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
         compact_toggle_param_widget(ctx, ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);
@@ -1140,6 +1138,7 @@ fn camera_column(
                 state.toggle(ui);
             }
             ui.strong("Quaternion");
+            section_preset_buttons(ui, PresetKind::Quaternion, actions, "sec_quat");
         });
         if state.is_open() && q.on {
             ui.horizontal(|ui| {

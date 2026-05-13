@@ -1441,14 +1441,20 @@ impl App {
                     match preset_library::load_preset(&path) {
                         Ok(file) => {
                             if file.kind() == kind {
-                                // Build a synthetic target: current preset with section replaced
-                                let mut target = self.preset.clone();
-                                file.apply_to_preset(&mut target);
-                                self.morph = Some(MorphState::new(
-                                    self.preset.clone(),
-                                    target,
-                                    self.blend_time,
-                                ));
+                                if kind == PresetKind::Full {
+                                    // Full presets morph the entire instrument
+                                    let mut target = self.preset.clone();
+                                    file.apply_to_preset(&mut target);
+                                    self.morph = Some(MorphState::new(
+                                        self.preset.clone(),
+                                        target,
+                                        self.blend_time,
+                                    ));
+                                } else {
+                                    // Section presets apply directly — other sections
+                                    // continue animating without interruption
+                                    file.apply_to_preset(&mut self.preset);
+                                }
                             } else {
                                 eprintln!(
                                     "Preset kind mismatch: expected {:?}, got {:?}",

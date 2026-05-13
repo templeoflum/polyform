@@ -29,7 +29,8 @@ The project's core purpose is making higher-dimensional mathematical thinking *f
 | `crates/polyform-core/src/notation.rs` | Composition string, formula symbols, DOF counting |
 | `crates/polyform-core/src/morph.rs` | MorphState, blend_presets, cosine-eased preset morphing |
 | `crates/polyform-core/src/preset_io.rs` | Tolerant import/export, registry reconciliation, make_layer |
-| `crates/polyform-core/src/factory_presets.rs` | 15 built-in presets as embedded JSON |
+| `crates/polyform-core/src/factory_presets.rs` | 15 built-in full presets as embedded JSON |
+| `crates/polyform-core/src/factory_section_presets.rs` | 50 built-in section presets (operations, lift, position, lens, distortion, quaternion, phosphor, sampling) |
 | `crates/polyform-core/src/tests.rs` | Integration tests (golden vectors, round-trip, schema compliance) |
 | `crates/polyform-core/tests/fixtures/golden_vectors.json` | JS-generated expected outputs for cross-language validation |
 | `crates/polyform-core/tests/fixtures/js-export.json` | JS preset fixture for deserialization tests |
@@ -71,8 +72,8 @@ The project's core purpose is making higher-dimensional mathematical thinking *f
 
 ```bash
 cargo run -p polyform-app          # Run the native app
-cargo test                         # Run all tests (169 across both crates)
-cargo test -p polyform-core        # Core library tests only (165)
+cargo test                         # Run all tests (174 across both crates)
+cargo test -p polyform-core        # Core library tests only (170)
 cargo test -p polyform-app         # App tests only (4, camera)
 ```
 
@@ -128,7 +129,7 @@ Quaternion uses full `Param` controls for angle and axes (ax, ay, az). Fixed mod
 
 ### Preset Library
 
-Directory-based at `~/.polyform/presets/` with subdirectories: `full/`, `operations/`, `lift/`, `camera/`, `phosphor/`, `sampling/`. 15 factory presets installed on startup. Section presets save/load individual sections via header buttons with inline ComboBox dropdowns.
+Directory-based at `~/.polyform/presets/` with subdirectories: `full/`, `operations/`, `lift/`, `position/`, `lens/`, `distortion/`, `quaternion/`, `phosphor/`, `sampling/`. 15 factory full presets + 50 factory section presets installed on startup. Section presets save/load individual sections via header buttons with inline ComboBox dropdowns.
 
 ### Rendering Pipeline
 
@@ -207,7 +208,7 @@ Each overlay occupies a fixed canvas position regardless of which others are act
 ## Project Trajectory
 
 **Phase 1** (parked): Web prototype (React + three.js) for design validation.
-**Phase 2** (active): Native Rust app (wgpu + egui). Phases 2.1-2.13 complete (core engine, rendering, UI, Spout, viewport, lattice family, compositional depth, phosphor, visualization overlays, Performance UI, preset system with morphing, expanded registries, factory presets, BPM timing). Next: MIDI mapping, recording.
+**Phase 2** (active): Native Rust app (wgpu + egui). Phases 2.1-2.14 complete (core engine, rendering, UI, Spout, viewport, lattice family, compositional depth, phosphor, visualization overlays, Performance UI, preset system with morphing, expanded registries, factory presets, BPM timing, split camera section presets). Next: MIDI mapping, recording.
 **Phase 3** (speculative): C++ rewrite with native Spout SDK integration.
 
 The **preset format is the portable asset** across all three phases.

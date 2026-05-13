@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::layer::Layer;
-use crate::preset::{Camera, Phosphor, Preset, Quaternion, Sampling};
+use crate::preset::{
+    CameraDistortion, CameraLens, CameraPosition, Phosphor, Preset, Quaternion, Sampling,
+};
 use crate::registry::Registry;
 use crate::types::{default_blend, Param, PhaseModulator, ShapeFunction};
 
@@ -47,7 +49,10 @@ pub enum PresetKind {
     Full,
     Operations,
     Lift,
-    Camera,
+    Position,
+    Lens,
+    Distortion,
+    Quaternion,
     Phosphor,
     Sampling,
 }
@@ -59,7 +64,10 @@ impl PresetKind {
             PresetKind::Full => "full",
             PresetKind::Operations => "operations",
             PresetKind::Lift => "lift",
-            PresetKind::Camera => "camera",
+            PresetKind::Position => "position",
+            PresetKind::Lens => "lens",
+            PresetKind::Distortion => "distortion",
+            PresetKind::Quaternion => "quaternion",
             PresetKind::Phosphor => "phosphor",
             PresetKind::Sampling => "sampling",
         }
@@ -76,11 +84,14 @@ pub enum PresetFile {
     Operations { layers: Vec<Layer> },
     #[serde(rename = "lift")]
     Lift { layers: Vec<Layer> },
-    #[serde(rename = "camera")]
-    Camera {
-        camera: Camera,
-        quaternion: Quaternion,
-    },
+    #[serde(rename = "position")]
+    Position { position: CameraPosition },
+    #[serde(rename = "lens")]
+    Lens { lens: CameraLens },
+    #[serde(rename = "distortion")]
+    Distortion { distortion: CameraDistortion },
+    #[serde(rename = "quaternion")]
+    Quaternion { quaternion: Quaternion },
     #[serde(rename = "phosphor")]
     Phosphor { phosphor: Phosphor },
     #[serde(rename = "sampling")]
@@ -93,7 +104,10 @@ impl PresetFile {
             PresetFile::Full(_) => PresetKind::Full,
             PresetFile::Operations { .. } => PresetKind::Operations,
             PresetFile::Lift { .. } => PresetKind::Lift,
-            PresetFile::Camera { .. } => PresetKind::Camera,
+            PresetFile::Position { .. } => PresetKind::Position,
+            PresetFile::Lens { .. } => PresetKind::Lens,
+            PresetFile::Distortion { .. } => PresetKind::Distortion,
+            PresetFile::Quaternion { .. } => PresetKind::Quaternion,
             PresetFile::Phosphor { .. } => PresetKind::Phosphor,
             PresetFile::Sampling { .. } => PresetKind::Sampling,
         }
@@ -109,8 +123,16 @@ impl PresetFile {
             PresetKind::Lift => PresetFile::Lift {
                 layers: preset.pipeline.lift.clone(),
             },
-            PresetKind::Camera => PresetFile::Camera {
-                camera: preset.camera.clone(),
+            PresetKind::Position => PresetFile::Position {
+                position: preset.camera.position.clone(),
+            },
+            PresetKind::Lens => PresetFile::Lens {
+                lens: preset.camera.lens.clone(),
+            },
+            PresetKind::Distortion => PresetFile::Distortion {
+                distortion: preset.camera.distortion.clone(),
+            },
+            PresetKind::Quaternion => PresetFile::Quaternion {
                 quaternion: preset.quaternion.clone(),
             },
             PresetKind::Phosphor => PresetFile::Phosphor {
@@ -128,10 +150,10 @@ impl PresetFile {
             PresetFile::Full(p) => *preset = p,
             PresetFile::Operations { layers } => preset.pipeline.operations = layers,
             PresetFile::Lift { layers } => preset.pipeline.lift = layers,
-            PresetFile::Camera { camera, quaternion } => {
-                preset.camera = camera;
-                preset.quaternion = quaternion;
-            }
+            PresetFile::Position { position } => preset.camera.position = position,
+            PresetFile::Lens { lens } => preset.camera.lens = lens,
+            PresetFile::Distortion { distortion } => preset.camera.distortion = distortion,
+            PresetFile::Quaternion { quaternion } => preset.quaternion = quaternion,
             PresetFile::Phosphor { phosphor } => preset.phosphor = phosphor,
             PresetFile::Sampling { sampling } => preset.sampling = sampling,
         }
@@ -935,11 +957,29 @@ mod tests {
             panic!("Expected Operations variant");
         }
 
-        // Camera section
-        let file = PresetFile::from_preset(&preset, PresetKind::Camera);
+        // Position section
+        let file = PresetFile::from_preset(&preset, PresetKind::Position);
         let json = export_preset_file_json(&file, false);
         let parsed = import_preset_file_json(&json).unwrap();
-        assert_eq!(parsed.kind(), PresetKind::Camera);
+        assert_eq!(parsed.kind(), PresetKind::Position);
+
+        // Lens section
+        let file = PresetFile::from_preset(&preset, PresetKind::Lens);
+        let json = export_preset_file_json(&file, false);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Lens);
+
+        // Distortion section
+        let file = PresetFile::from_preset(&preset, PresetKind::Distortion);
+        let json = export_preset_file_json(&file, false);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Distortion);
+
+        // Quaternion section
+        let file = PresetFile::from_preset(&preset, PresetKind::Quaternion);
+        let json = export_preset_file_json(&file, false);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Quaternion);
 
         // Phosphor section
         let file = PresetFile::from_preset(&preset, PresetKind::Phosphor);
