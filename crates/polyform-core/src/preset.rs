@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::layer::Layer;
-use crate::types::{Param, ProjectionMode, QuaternionMode, ToggleParam, PHI};
+use crate::types::{LatticeType, Param, ProjectionMode, QuaternionMode, ToggleParam, PHI};
 
 pub const SCHEMA_NAME: &str = "polyform.preset";
 pub const SCHEMA_VERSION: u32 = 1;
@@ -149,13 +149,42 @@ impl Default for CameraLens {
 pub struct CameraDistortion {
     pub k1: ToggleParam,
     pub k2: ToggleParam,
+    #[serde(default = "default_distortion_k3")]
+    pub k3: ToggleParam,
+    #[serde(default = "default_distortion_k4")]
+    pub k4: ToggleParam,
+    #[serde(default = "default_distortion_p1")]
+    pub p1: ToggleParam,
+    #[serde(default = "default_distortion_p2")]
+    pub p2: ToggleParam,
+    #[serde(default = "default_distortion_center_x")]
+    pub center_x: ToggleParam,
+    #[serde(default = "default_distortion_center_y")]
+    pub center_y: ToggleParam,
+    #[serde(default = "default_distortion_squeeze")]
+    pub squeeze: ToggleParam,
 }
+
+fn default_distortion_k3() -> ToggleParam { ToggleParam::new(false, 0.0, -1.0, 1.0, false) }
+fn default_distortion_k4() -> ToggleParam { ToggleParam::new(false, 0.0, -1.0, 1.0, false) }
+fn default_distortion_p1() -> ToggleParam { ToggleParam::new(false, 0.0, -0.5, 0.5, false) }
+fn default_distortion_p2() -> ToggleParam { ToggleParam::new(false, 0.0, -0.5, 0.5, false) }
+fn default_distortion_center_x() -> ToggleParam { ToggleParam::new(false, 0.0, -1.0, 1.0, false) }
+fn default_distortion_center_y() -> ToggleParam { ToggleParam::new(false, 0.0, -1.0, 1.0, false) }
+fn default_distortion_squeeze() -> ToggleParam { ToggleParam::new(false, 1.0, 0.1, 3.0, false) }
 
 impl Default for CameraDistortion {
     fn default() -> Self {
         Self {
             k1: ToggleParam::new(false, 0.0, -1.0, 1.0, false),
             k2: ToggleParam::new(false, 0.0, -1.0, 1.0, false),
+            k3: default_distortion_k3(),
+            k4: default_distortion_k4(),
+            p1: default_distortion_p1(),
+            p2: default_distortion_p2(),
+            center_x: default_distortion_center_x(),
+            center_y: default_distortion_center_y(),
+            squeeze: default_distortion_squeeze(),
         }
     }
 }
@@ -239,6 +268,39 @@ impl Default for Quaternion {
 }
 
 // =============================================================================
+// LatticeParams
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LatticeParams {
+    #[serde(default = "default_spoke_count")]
+    pub spoke_count: u32,
+    #[serde(default = "default_inner_radius")]
+    pub inner_radius: f64,
+    #[serde(default = "default_focus_distance")]
+    pub focus_distance: f64,
+    #[serde(default = "default_tau_count")]
+    pub tau_count: u32,
+}
+
+fn default_spoke_count() -> u32 { 24 }
+fn default_inner_radius() -> f64 { 0.05 }
+fn default_focus_distance() -> f64 { 1.0 }
+fn default_tau_count() -> u32 { 16 }
+
+impl Default for LatticeParams {
+    fn default() -> Self {
+        Self {
+            spoke_count: 24,
+            inner_radius: 0.05,
+            focus_distance: 1.0,
+            tau_count: 16,
+        }
+    }
+}
+
+// =============================================================================
 // Sampling
 // =============================================================================
 
@@ -247,6 +309,10 @@ impl Default for Quaternion {
 pub struct Sampling {
     pub scale: ToggleParam,
     pub density: ToggleParam,
+    #[serde(default)]
+    pub lattice_type: LatticeType,
+    #[serde(default)]
+    pub lattice_params: LatticeParams,
 }
 
 impl Default for Sampling {
@@ -254,6 +320,8 @@ impl Default for Sampling {
         Self {
             scale: ToggleParam::new(true, 0.6, 0.1, 1.5, false),
             density: ToggleParam::new(true, 27.0, 7.0, 51.0, false),
+            lattice_type: LatticeType::Cartesian,
+            lattice_params: LatticeParams::default(),
         }
     }
 }
@@ -275,6 +343,8 @@ pub struct Display {
     pub show_param_values: bool,
     #[serde(default)]
     pub show_fps: bool,
+    #[serde(default)]
+    pub show_caustic: bool,
 }
 
 fn default_true() -> bool {
@@ -289,6 +359,37 @@ impl Default for Display {
             show_active_layers: true,
             show_param_values: true,
             show_fps: false,
+            show_caustic: false,
+        }
+    }
+}
+
+// =============================================================================
+// Viewport
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Viewport {
+    #[serde(default = "default_viewport_width")]
+    pub width: u32,
+    #[serde(default = "default_viewport_height")]
+    pub height: u32,
+}
+
+fn default_viewport_width() -> u32 {
+    1920
+}
+
+fn default_viewport_height() -> u32 {
+    1080
+}
+
+impl Default for Viewport {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
         }
     }
 }
@@ -322,6 +423,8 @@ pub struct Preset {
     pub sampling: Sampling,
     #[serde(default)]
     pub display: Display,
+    #[serde(default)]
+    pub viewport: Viewport,
 }
 
 fn default_schema() -> String {
@@ -333,7 +436,7 @@ fn default_version() -> u32 {
 }
 
 fn default_tempo() -> Param {
-    Param::new(0.3, 0.0, 2.0, false)
+    Param::new(0.3, 0.0, 16666.67, false) // max = 1,000,000 BPM / 60
 }
 
 fn default_palette() -> String {
@@ -354,6 +457,7 @@ impl Default for Preset {
             quaternion: Quaternion::default(),
             sampling: Sampling::default(),
             display: Display::default(),
+            viewport: Viewport::default(),
         }
     }
 }

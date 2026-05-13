@@ -191,6 +191,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         category: "complex",
         params: vec![
             ParamDef { key: "n", default: 2.0, min: 0.1, max: 5.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::z_pow,
@@ -199,7 +201,10 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         key: "zInv",
         label: "1/z",
         category: "complex",
-        params: vec![],
+        params: vec![
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
         needs_origin: false,
         apply: ops::z_inv,
     });
@@ -207,7 +212,10 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         key: "zExp",
         label: "exp(z)",
         category: "complex",
-        params: vec![],
+        params: vec![
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
         needs_origin: false,
         apply: ops::z_exp,
     });
@@ -215,7 +223,10 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         key: "zLog",
         label: "log(z)",
         category: "complex",
-        params: vec![],
+        params: vec![
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
         needs_origin: false,
         apply: ops::z_log,
     });
@@ -223,7 +234,10 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         key: "zSin",
         label: "sin(z)",
         category: "complex",
-        params: vec![],
+        params: vec![
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
         needs_origin: false,
         apply: ops::z_sin,
     });
@@ -231,7 +245,10 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         key: "zCos",
         label: "cos(z)",
         category: "complex",
-        params: vec![],
+        params: vec![
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
         needs_origin: false,
         apply: ops::z_cos,
     });
@@ -267,6 +284,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         category: "polar",
         params: vec![
             ParamDef { key: "k", default: 1.0, min: -5.0, max: 5.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::spiral,
@@ -277,6 +296,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         category: "polar",
         params: vec![
             ParamDef { key: "p", default: 1.5, min: 0.2, max: 4.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::pinch,
@@ -288,6 +309,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         params: vec![
             ParamDef { key: "k", default: 2.0, min: -8.0, max: 8.0, periodic: false },
             ParamDef { key: "sigma", default: 0.4, min: 0.05, max: 2.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::swirl,
@@ -300,6 +323,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
             ParamDef { key: "amp", default: 0.1, min: 0.0, max: 0.5, periodic: false },
             ParamDef { key: "freq", default: 5.0, min: 0.5, max: 20.0, periodic: false },
             ParamDef { key: "phase", default: 0.0, min: 0.0, max: PI * 2.0, periodic: true },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::radial_sine,
@@ -311,6 +336,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         params: vec![
             ParamDef { key: "amp", default: 0.3, min: 0.0, max: 2.0, periodic: false },
             ParamDef { key: "k", default: 3.0, min: 1.0, max: 12.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::angle_warp,
@@ -337,6 +364,8 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
             ParamDef { key: "amp", default: 0.1, min: 0.0, max: 0.5, periodic: false },
             ParamDef { key: "freq", default: 6.0, min: 0.5, max: 20.0, periodic: false },
             ParamDef { key: "phase", default: 0.0, min: 0.0, max: PI * 2.0, periodic: true },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
         ],
         needs_origin: false,
         apply: ops::ripple,

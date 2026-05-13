@@ -12,7 +12,7 @@ struct TransformedVertex {
     vx: f32,
     vy: f32,
     vz: f32,
-    _pad: f32,
+    det_j: f32,
 }
 
 struct OpDescriptor {
@@ -21,6 +21,7 @@ struct OpDescriptor {
     needs_origin: u32,
     num_params: u32,
     params: vec4<f32>,  // max 4 params per op, packed in registry order
+    center: vec4<f32>,  // xy = center offset, zw = padding
 }
 
 struct LiftDescriptor {
@@ -35,7 +36,7 @@ struct PipelineUniforms {
     num_ops: u32,
     num_lifts: u32,
     any_needs_jacobian: u32,
-    _pad: u32,
+    compute_caustic: u32,
 }
 
 @group(0) @binding(0) var<storage, read> grid_input: array<GridVertex>;
@@ -262,13 +263,20 @@ fn apply_ops_pipeline(x0: f32, y0: f32) -> vec2<f32> {
     for (var i: u32 = 0u; i < uniforms.num_ops; i = i + 1u) {
         let op = op_chain[i];
         if op.blend <= 0.0 { continue; }
-        let result = dispatch_op(op.type_index, x, y, op.params, x0, y0);
+        // Center offset: translate input by -center, apply op, translate output by +center
+        let cx = op.center.x;
+        let cy = op.center.y;
+        let local_x = x - cx;
+        let local_y = y - cy;
+        let result = dispatch_op(op.type_index, local_x, local_y, op.params, x0, y0);
+        let global_x = result.x + cx;
+        let global_y = result.y + cy;
         if op.blend >= 1.0 {
-            x = result.x;
-            y = result.y;
+            x = global_x;
+            y = global_y;
         } else {
-            x = x + (result.x - x) * op.blend;
-            y = y + (result.y - y) * op.blend;
+            x = x + (global_x - x) * op.blend;
+            y = y + (global_y - y) * op.blend;
         }
     }
     return vec2<f32>(x, y);
@@ -451,9 +459,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tx = transformed.x;
     let ty = transformed.y;
 
-    // Stage 2: Compute Jacobian if needed
+    // Stage 2: Compute Jacobian if needed (for lifts or caustic overlay)
     var det_j: f32 = 1.0;
-    if uniforms.any_needs_jacobian != 0u {
+    if uniforms.any_needs_jacobian != 0u || uniforms.compute_caustic != 0u {
         det_j = numerical_jacobian(x0, y0);
     }
 
@@ -479,5 +487,5 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    grid_output[idx] = TransformedVertex(world_x, world_y, world_z, 0.0);
+    grid_output[idx] = TransformedVertex(world_x, world_y, world_z, det_j);
 }

@@ -416,8 +416,8 @@ mod tests {
         let reg = Registry::new();
         let layer = make_test_layer("zPow", &["n"]);
         let result = count_dofs(&[layer], &[], &[], &reg);
-        // base=2, + params(1) + blend(1) = 4
-        assert_eq!(result.structural, 4);
+        // base=2, + params(3: n, cx, cy) + blend(1) = 6
+        assert_eq!(result.structural, 6);
         assert_eq!(result.temporal, 0);
     }
 

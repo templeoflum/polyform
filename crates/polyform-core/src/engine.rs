@@ -305,6 +305,13 @@ impl AnimationEngine {
             shift_y: self.resolve_toggle_param(&preset.camera.lens.shift_y, "camera.lens.shiftY"),
             k1: self.resolve_toggle_param(&preset.camera.distortion.k1, "camera.distortion.k1"),
             k2: self.resolve_toggle_param(&preset.camera.distortion.k2, "camera.distortion.k2"),
+            k3: self.resolve_toggle_param(&preset.camera.distortion.k3, "camera.distortion.k3"),
+            k4: self.resolve_toggle_param(&preset.camera.distortion.k4, "camera.distortion.k4"),
+            p1: self.resolve_toggle_param(&preset.camera.distortion.p1, "camera.distortion.p1"),
+            p2: self.resolve_toggle_param(&preset.camera.distortion.p2, "camera.distortion.p2"),
+            distortion_cx: self.resolve_toggle_param(&preset.camera.distortion.center_x, "camera.distortion.centerX"),
+            distortion_cy: self.resolve_toggle_param(&preset.camera.distortion.center_y, "camera.distortion.centerY"),
+            squeeze: self.resolve_toggle_param(&preset.camera.distortion.squeeze, "camera.distortion.squeeze"),
         }
     }
 
@@ -357,6 +364,13 @@ impl AnimationEngine {
             "camera.lens.shiftY" => 0.0,
             "camera.distortion.k1" => 0.0,
             "camera.distortion.k2" => 0.0,
+            "camera.distortion.k3" => 0.0,
+            "camera.distortion.k4" => 0.0,
+            "camera.distortion.p1" => 0.0,
+            "camera.distortion.p2" => 0.0,
+            "camera.distortion.centerX" => 0.0,
+            "camera.distortion.centerY" => 0.0,
+            "camera.distortion.squeeze" => 1.0,
             "sampling.scale" => 0.6,
             "sampling.density" => 27.0,
             _ => 0.0,
@@ -504,6 +518,13 @@ impl AnimationEngine {
         let shift_y = self.resolve_view_transition("camera.lens.shiftY", camera_resolved.shift_y);
         let k1 = self.resolve_view_transition("camera.distortion.k1", camera_resolved.k1);
         let k2 = self.resolve_view_transition("camera.distortion.k2", camera_resolved.k2);
+        let k3 = self.resolve_view_transition("camera.distortion.k3", camera_resolved.k3);
+        let k4 = self.resolve_view_transition("camera.distortion.k4", camera_resolved.k4);
+        let p1 = self.resolve_view_transition("camera.distortion.p1", camera_resolved.p1);
+        let p2 = self.resolve_view_transition("camera.distortion.p2", camera_resolved.p2);
+        let distortion_cx = self.resolve_view_transition("camera.distortion.centerX", camera_resolved.distortion_cx);
+        let distortion_cy = self.resolve_view_transition("camera.distortion.centerY", camera_resolved.distortion_cy);
+        let squeeze = self.resolve_view_transition("camera.distortion.squeeze", camera_resolved.squeeze);
 
         FrameState {
             operations,
@@ -524,6 +545,13 @@ impl AnimationEngine {
             shift_y,
             k1,
             k2,
+            k3,
+            k4,
+            p1,
+            p2,
+            distortion_cx,
+            distortion_cy,
+            squeeze,
             quat_on: {
                 let qp = ParamPath::View("quaternion.blend".to_string());
                 if self.has_weight(&qp) {
@@ -537,8 +565,11 @@ impl AnimationEngine {
             quat_axis,
             scale: sampling_resolved.scale,
             density: sampling_resolved.density,
+            lattice_type: preset.sampling.lattice_type,
+            lattice_params: preset.sampling.lattice_params.clone(),
             palette_key: preset.palette.clone(),
             has_active_layers,
+            show_caustic: preset.display.show_caustic,
         }
     }
 
@@ -759,6 +790,13 @@ impl AnimationEngine {
             "camera.lens.shiftY" => Some(&mut preset.camera.lens.shift_y),
             "camera.distortion.k1" => Some(&mut preset.camera.distortion.k1),
             "camera.distortion.k2" => Some(&mut preset.camera.distortion.k2),
+            "camera.distortion.k3" => Some(&mut preset.camera.distortion.k3),
+            "camera.distortion.k4" => Some(&mut preset.camera.distortion.k4),
+            "camera.distortion.p1" => Some(&mut preset.camera.distortion.p1),
+            "camera.distortion.p2" => Some(&mut preset.camera.distortion.p2),
+            "camera.distortion.centerX" => Some(&mut preset.camera.distortion.center_x),
+            "camera.distortion.centerY" => Some(&mut preset.camera.distortion.center_y),
+            "camera.distortion.squeeze" => Some(&mut preset.camera.distortion.squeeze),
             "sampling.scale" => Some(&mut preset.sampling.scale),
             "sampling.density" => Some(&mut preset.sampling.density),
             _ => None,
@@ -833,6 +871,13 @@ struct CameraResolved {
     shift_y: f64,
     k1: f64,
     k2: f64,
+    k3: f64,
+    k4: f64,
+    p1: f64,
+    p2: f64,
+    distortion_cx: f64,
+    distortion_cy: f64,
+    squeeze: f64,
 }
 
 struct SamplingResolved {

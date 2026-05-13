@@ -97,7 +97,7 @@ fn default_values_match_js() {
     // Tempo
     assert_eq!(p.tempo.value, 0.3);
     assert_eq!(p.tempo.min, 0.0);
-    assert_eq!(p.tempo.max, 2.0);
+    assert!((p.tempo.max - 16666.67).abs() < 0.01);
     assert!(!p.tempo.anim);
 
     // Defaults
@@ -136,6 +136,14 @@ fn default_values_match_js() {
     // Distortion
     assert!(!p.camera.distortion.k1.on);
     assert!(!p.camera.distortion.k2.on);
+    assert!(!p.camera.distortion.k3.on);
+    assert!(!p.camera.distortion.k4.on);
+    assert!(!p.camera.distortion.p1.on);
+    assert!(!p.camera.distortion.p2.on);
+    assert!(!p.camera.distortion.center_x.on);
+    assert!(!p.camera.distortion.center_y.on);
+    assert!(!p.camera.distortion.squeeze.on);
+    assert_eq!(p.camera.distortion.squeeze.param.value, 1.0);
 
     // Quaternion
     assert!(!p.quaternion.on);
@@ -160,6 +168,7 @@ fn default_values_match_js() {
     assert!(p.display.show_active_layers);
     assert!(p.display.show_param_values);
     assert!(!p.display.show_fps);
+    assert!(!p.display.show_caustic);
 }
 
 // =============================================================================

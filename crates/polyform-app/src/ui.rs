@@ -3,7 +3,7 @@ use polyform_core::frame_state::FrameState;
 use polyform_core::palette::PALETTE_KEYS;
 use polyform_core::preset::Preset;
 use polyform_core::registry::Registry;
-use polyform_core::types::{Param, ProjectionMode, QuaternionMode, ShapeFunction, ToggleParam};
+use polyform_core::types::{LatticeType, Param, ProjectionMode, QuaternionMode, ShapeFunction, ToggleParam};
 
 // =============================================================================
 // Constants
@@ -174,9 +174,29 @@ const RATIO_GROUPS: &[RatioGroup] = &[
     },
 ];
 
-const BPM_PRESETS: &[u32] = &[
-    1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
-    110, 120, 130, 140, 150, 160, 170, 180, 190, 200,
+/// BPM preset groups — each row has a label and values with intentional meaning.
+struct BpmGroup {
+    label: &'static str,
+    values: &'static [u32],
+}
+
+const BPM_GROUPS: &[BpmGroup] = &[
+    BpmGroup {
+        label: "slow",
+        values: &[1, 5, 10, 20, 30, 40, 50, 60],
+    },
+    BpmGroup {
+        label: "musical",
+        values: &[72, 80, 90, 100, 110, 120, 130, 140, 160, 180, 200],
+    },
+    BpmGroup {
+        label: "fast",
+        values: &[240, 300, 360, 480, 600, 720, 960],
+    },
+    BpmGroup {
+        label: "raster",
+        values: &[1200, 1800, 2400, 3600, 7200, 14400, 30000, 60000],
+    },
 ];
 
 // =============================================================================
@@ -210,6 +230,12 @@ pub enum UiAction {
     SetPresetName(String),
     SavePreset,
     LoadPreset,
+    SetViewportSize(u32, u32),
+    SetLatticeType(LatticeType),
+    SetLatticeSpokeCount(u32),
+    SetLatticeInnerRadius(f64),
+    SetLatticeFocusDistance(f64),
+    SetLatticeTauCount(u32),
     #[cfg(target_os = "windows")]
     SetSpoutEnabled(bool),
     #[cfg(target_os = "windows")]
@@ -242,6 +268,8 @@ pub struct OverlayState {
     pub show_dim_count: bool,
     pub show_active_layers: bool,
     pub show_fps: bool,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
     #[cfg(target_os = "windows")]
     pub spout_enabled: bool,
     #[cfg(target_os = "windows")]
@@ -255,6 +283,8 @@ impl Default for OverlayState {
             show_dim_count: true,
             show_active_layers: true,
             show_fps: false,
+            viewport_width: 1920,
+            viewport_height: 1080,
             #[cfg(target_os = "windows")]
             spout_enabled: false,
             #[cfg(target_os = "windows")]
@@ -273,41 +303,56 @@ pub fn build_ui(
     let mut actions = Vec::new();
 
     egui::CentralPanel::default().show(ctx, |ui| {
-        // Top bar: header, overlays, tempo, sampling (always visible, full width)
         ui.heading("Polyform Controls");
         ui.separator();
 
-        header_section(ui, preset, &mut actions);
+        // Sync viewport from preset
+        overlay.viewport_width = preset.viewport.width;
+        overlay.viewport_height = preset.viewport.height;
 
-        ui.horizontal(|ui| {
-            ui.label("Overlays:");
-            ui.checkbox(&mut overlay.show_signal_flow, "Signal");
-            ui.checkbox(&mut overlay.show_dim_count, "Dim");
-            ui.checkbox(&mut overlay.show_active_layers, "Layers");
-            ui.checkbox(&mut overlay.show_fps, "FPS");
-        });
+        // Top section: 3 columns — [preset/output] [lattice] [tempo]
+        ui.columns(3, |cols| {
+            // Column 0: Preset identity + output
+            cols[0].push_id("top_preset", |ui| {
+                header_section(ui, preset, &mut actions);
 
-        #[cfg(target_os = "windows")]
-        {
-            ui.horizontal(|ui| {
-                ui.label("Spout:");
-                if ui.checkbox(&mut overlay.spout_enabled, "Send").changed() {
-                    actions.push(UiAction::SetSpoutEnabled(overlay.spout_enabled));
-                }
-                if overlay.spout_enabled {
-                    if ui.checkbox(&mut overlay.spout_include_overlays, "Include overlays").changed() {
-                        actions.push(UiAction::SetSpoutOverlays(overlay.spout_include_overlays));
-                    }
+                ui.horizontal(|ui| {
+                    ui.label("Overlays:");
+                    ui.checkbox(&mut overlay.show_signal_flow, "Signal");
+                    ui.checkbox(&mut overlay.show_dim_count, "Dim");
+                    ui.checkbox(&mut overlay.show_active_layers, "Layers");
+                    ui.checkbox(&mut overlay.show_fps, "FPS");
+                });
+
+                viewport_section(ui, overlay, &mut actions);
+
+                #[cfg(target_os = "windows")]
+                {
+                    ui.horizontal(|ui| {
+                        ui.label("Spout:");
+                        if ui.checkbox(&mut overlay.spout_enabled, "Send").changed() {
+                            actions.push(UiAction::SetSpoutEnabled(overlay.spout_enabled));
+                        }
+                        if overlay.spout_enabled {
+                            if ui.checkbox(&mut overlay.spout_include_overlays, "Include overlays").changed() {
+                                actions.push(UiAction::SetSpoutOverlays(overlay.spout_include_overlays));
+                            }
+                        }
+                    });
                 }
             });
-        }
 
-        ui.separator();
+            // Column 1: Lattice / sampling
+            cols[1].push_id("top_lattice", |ui| {
+                sampling_section(ui, preset, frame_state, &mut actions);
+            });
 
-        tempo_section(ui, preset, &mut actions);
-        ui.separator();
+            // Column 2: Tempo
+            cols[2].push_id("top_tempo", |ui| {
+                tempo_section(ui, preset, &mut actions);
+            });
+        });
 
-        sampling_section(ui, preset, frame_state, &mut actions);
         ui.separator();
 
         // Multi-column layout: each column scrolls independently
@@ -420,26 +465,43 @@ fn header_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAction
 fn tempo_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAction>) {
     ui.label("Tempo");
 
-    // Display as BPM (tempo * 60)
     let bpm = preset.tempo.value * 60.0;
-    let mut bpm_val = bpm;
-    let bpm_label = format!("{:.0} bpm", bpm_val);
-    if ui.add(egui::Slider::new(&mut bpm_val, 0.0..=200.0)
-        .text(&bpm_label))
+
+    // Manual BPM entry — accepts any value from 0.01 to 1,000,000
+    ui.horizontal(|ui| {
+        let mut bpm_entry = bpm;
+        if ui.add(
+            egui::DragValue::new(&mut bpm_entry)
+                .speed(1.0)
+                .range(0.01..=1_000_000.0)
+                .suffix(" bpm")
+        ).changed() {
+            actions.push(UiAction::SetParam(ParamField::Tempo, bpm_entry / 60.0));
+        }
+    });
+
+    // Logarithmic slider for quick exploration
+    let mut bpm_val = bpm.clamp(0.01, 1_000_000.0);
+    if ui.add(egui::Slider::new(&mut bpm_val, 0.01..=1_000_000.0)
+        .logarithmic(true)
+        .show_value(false))
         .changed()
     {
         actions.push(UiAction::SetParam(ParamField::Tempo, bpm_val / 60.0));
     }
 
-    // BPM preset buttons
-    ui.horizontal_wrapped(|ui| {
-        for &preset_bpm in BPM_PRESETS {
-            let is_active = (bpm.round() as u32) == preset_bpm;
-            if ui.selectable_label(is_active, format!("{}", preset_bpm)).clicked() {
-                actions.push(UiAction::SetParam(ParamField::Tempo, preset_bpm as f64 / 60.0));
+    // BPM preset buttons — grouped in rows
+    for group in BPM_GROUPS {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(group.label).weak().size(10.0));
+            for &preset_bpm in group.values {
+                let is_active = (bpm.round() as u32) == preset_bpm;
+                if ui.selectable_label(is_active, format!("{}", preset_bpm)).clicked() {
+                    actions.push(UiAction::SetParam(ParamField::Tempo, preset_bpm as f64 / 60.0));
+                }
             }
-        }
-    });
+        });
+    }
 }
 
 // =============================================================================
@@ -950,6 +1012,13 @@ pub fn frame_state_view_value(fs: &FrameState, view_key: &str) -> Option<f64> {
         "camera.lens.shiftY" => Some(fs.shift_y),
         "camera.distortion.k1" => Some(fs.k1),
         "camera.distortion.k2" => Some(fs.k2),
+        "camera.distortion.k3" => Some(fs.k3),
+        "camera.distortion.k4" => Some(fs.k4),
+        "camera.distortion.p1" => Some(fs.p1),
+        "camera.distortion.p2" => Some(fs.p2),
+        "camera.distortion.centerX" => Some(fs.distortion_cx),
+        "camera.distortion.centerY" => Some(fs.distortion_cy),
+        "camera.distortion.squeeze" => Some(fs.squeeze),
         "sampling.scale" => Some(fs.scale),
         "sampling.density" => Some(fs.density),
         "quaternion.angle" => Some(fs.quat_angle),
@@ -1008,6 +1077,13 @@ fn camera_lens_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&
             let dist = &preset.camera.distortion;
             toggle_param_widget(ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
             toggle_param_widget(ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
+            toggle_param_widget(ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);
+            toggle_param_widget(ui, "k4", &dist.k4, "camera.distortion.k4", frame_state, actions);
+            toggle_param_widget(ui, "p1", &dist.p1, "camera.distortion.p1", frame_state, actions);
+            toggle_param_widget(ui, "p2", &dist.p2, "camera.distortion.p2", frame_state, actions);
+            toggle_param_widget(ui, "center x", &dist.center_x, "camera.distortion.centerX", frame_state, actions);
+            toggle_param_widget(ui, "center y", &dist.center_y, "camera.distortion.centerY", frame_state, actions);
+            toggle_param_widget(ui, "squeeze", &dist.squeeze, "camera.distortion.squeeze", frame_state, actions);
         });
 }
 
@@ -1095,10 +1171,119 @@ fn quaternion_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&F
 // =============================================================================
 
 fn sampling_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    egui::CollapsingHeader::new("Sampling")
-        .default_open(false)
-        .show(ui, |ui| {
-            toggle_param_widget(ui, "lattice scale", &preset.sampling.scale, "sampling.scale", frame_state, actions);
-            toggle_param_widget(ui, "lattice density", &preset.sampling.density, "sampling.density", frame_state, actions);
-        });
+    toggle_param_widget(ui, "lattice scale", &preset.sampling.scale, "sampling.scale", frame_state, actions);
+    toggle_param_widget(ui, "lattice density", &preset.sampling.density, "sampling.density", frame_state, actions);
+
+    // Lattice type selector
+    ui.horizontal(|ui| {
+        ui.label("Lattice:");
+        let lt = preset.sampling.lattice_type;
+        for &(label, ty) in &[
+            ("Cartesian", LatticeType::Cartesian),
+            ("Polar", LatticeType::Polar),
+            ("Hex", LatticeType::Hex),
+            ("LogPolar", LatticeType::LogPolar),
+            ("Bipolar", LatticeType::Bipolar),
+        ] {
+            if ui.selectable_label(lt == ty, label).clicked() && lt != ty {
+                actions.push(UiAction::SetLatticeType(ty));
+            }
+        }
+    });
+
+    // Per-type controls
+    let lp = &preset.sampling.lattice_params;
+    match preset.sampling.lattice_type {
+        LatticeType::Polar => {
+            ui.horizontal(|ui| {
+                ui.label("spokes:");
+                let mut v = lp.spoke_count as i32;
+                if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
+                    actions.push(UiAction::SetLatticeSpokeCount(v as u32));
+                }
+            });
+        }
+        LatticeType::LogPolar => {
+            ui.horizontal(|ui| {
+                ui.label("spokes:");
+                let mut v = lp.spoke_count as i32;
+                if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
+                    actions.push(UiAction::SetLatticeSpokeCount(v as u32));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("inner radius:");
+                let mut v = lp.inner_radius;
+                if ui.add(egui::DragValue::new(&mut v).speed(0.005).range(0.01..=0.5)).changed() {
+                    actions.push(UiAction::SetLatticeInnerRadius(v));
+                }
+            });
+        }
+        LatticeType::Bipolar => {
+            ui.horizontal(|ui| {
+                ui.label("focus distance:");
+                let mut v = lp.focus_distance;
+                if ui.add(egui::DragValue::new(&mut v).speed(0.01).range(0.1..=3.0)).changed() {
+                    actions.push(UiAction::SetLatticeFocusDistance(v));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("tau curves:");
+                let mut v = lp.tau_count as i32;
+                if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
+                    actions.push(UiAction::SetLatticeTauCount(v as u32));
+                }
+            });
+        }
+        LatticeType::Cartesian | LatticeType::Hex => {}
+    }
+}
+
+// =============================================================================
+// Viewport section
+// =============================================================================
+
+fn viewport_section(ui: &mut egui::Ui, overlay: &mut OverlayState, actions: &mut Vec<UiAction>) {
+    ui.horizontal(|ui| {
+        ui.label("Viewport:");
+
+        let mut w = overlay.viewport_width as i32;
+        let mut h = overlay.viewport_height as i32;
+
+        let w_changed = ui.add(
+            egui::DragValue::new(&mut w)
+                .speed(1)
+                .range(320..=7680),
+        ).changed();
+
+        ui.label("\u{00d7}");
+
+        let h_changed = ui.add(
+            egui::DragValue::new(&mut h)
+                .speed(1)
+                .range(320..=7680),
+        ).changed();
+
+        if w_changed || h_changed {
+            overlay.viewport_width = w as u32;
+            overlay.viewport_height = h as u32;
+            actions.push(UiAction::SetViewportSize(w as u32, h as u32));
+        }
+
+        if ui.small_button("HD").clicked() {
+            overlay.viewport_width = 1920;
+            overlay.viewport_height = 1080;
+            actions.push(UiAction::SetViewportSize(1920, 1080));
+        }
+        if ui.small_button("2K").clicked() {
+            overlay.viewport_width = 2560;
+            overlay.viewport_height = 1440;
+            actions.push(UiAction::SetViewportSize(2560, 1440));
+        }
+        if ui.small_button("4K").clicked() {
+            overlay.viewport_width = 3840;
+            overlay.viewport_height = 2160;
+            actions.push(UiAction::SetViewportSize(3840, 2160));
+        }
+    });
 }

@@ -104,7 +104,8 @@ pub fn build_camera(frame: &FrameState, aspect: f32) -> CameraMatrices {
 mod tests {
     use super::*;
     use polyform_core::frame_state::FrameState;
-    use polyform_core::types::ProjectionMode;
+    use polyform_core::preset::LatticeParams;
+    use polyform_core::types::{LatticeType, ProjectionMode};
 
     fn default_frame() -> FrameState {
         FrameState {
@@ -126,14 +127,24 @@ mod tests {
             shift_y: 0.0,
             k1: 0.0,
             k2: 0.0,
+            k3: 0.0,
+            k4: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+            distortion_cx: 0.0,
+            distortion_cy: 0.0,
+            squeeze: 1.0,
             quat_on: false,
             quat: [1.0, 0.0, 0.0, 0.0],
             quat_angle: 0.0,
             quat_axis: [0.0, 1.0, 0.0],
             scale: 0.6,
             density: 27.0,
+            lattice_type: LatticeType::Cartesian,
+            lattice_params: LatticeParams::default(),
             palette_key: "phosphor".to_string(),
             has_active_layers: false,
+            show_caustic: false,
         }
     }
 

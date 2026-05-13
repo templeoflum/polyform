@@ -472,6 +472,9 @@ impl App {
                             winit::keyboard::KeyCode::KeyA => {
                                 self.overlay.show_active_layers = !self.overlay.show_active_layers;
                             }
+                            winit::keyboard::KeyCode::KeyC => {
+                                self.preset.display.show_caustic = !self.preset.display.show_caustic;
+                            }
                             _ => {}
                         }
                     }
@@ -498,27 +501,25 @@ impl App {
         };
 
         // Render the lattice (borrows self.renderer + self.output)
+        let vp_w = self.preset.viewport.width;
+        let vp_h = self.preset.viewport.height;
         let render_result = if let (Some(renderer), Some(output)) =
             (&mut self.renderer, &self.output)
         {
-            match renderer.render(frame_state, &output.surface, &output.surface_config) {
+            match renderer.render(frame_state, vp_w, vp_h, &output.surface, &output.surface_config) {
                 Ok(surface_texture) => {
-                    let w = output.surface_config.width;
-                    let h = output.surface_config.height;
-
                     // Spout readback before overlays (clean lattice only)
                     #[cfg(target_os = "windows")]
                     if self.spout_enabled && !self.spout_include_overlays {
                         spout_send(
                             &mut self.spout_sender,
                             renderer,
-                            &surface_texture,
-                            w,
-                            h,
+                            vp_w,
+                            vp_h,
                         );
                     }
 
-                    Some((surface_texture, w, h))
+                    Some(surface_texture)
                 }
                 Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                     output.surface.configure(&device, &output.surface_config);
@@ -538,19 +539,18 @@ impl App {
         };
 
         // Overlay + present (renderer borrow is released)
-        if let Some((surface_texture, w, h)) = render_result {
+        if let Some(surface_texture) = render_result {
             self.render_output_overlay(&device, &queue, &surface_texture);
 
-            // Spout readback after overlays
+            // Spout readback after overlays — reads from offscreen texture
             #[cfg(target_os = "windows")]
             if self.spout_enabled && self.spout_include_overlays {
                 if let Some(renderer) = &mut self.renderer {
                     spout_send(
                         &mut self.spout_sender,
                         renderer,
-                        &surface_texture,
-                        w,
-                        h,
+                        vp_w,
+                        vp_h,
                     );
                 }
             }
@@ -1307,6 +1307,25 @@ impl App {
                 UiAction::SetSpoutOverlays(include) => {
                     self.spout_include_overlays = include;
                 }
+                UiAction::SetViewportSize(w, h) => {
+                    self.preset.viewport.width = w;
+                    self.preset.viewport.height = h;
+                }
+                UiAction::SetLatticeType(ty) => {
+                    self.preset.sampling.lattice_type = ty;
+                }
+                UiAction::SetLatticeSpokeCount(n) => {
+                    self.preset.sampling.lattice_params.spoke_count = n;
+                }
+                UiAction::SetLatticeInnerRadius(v) => {
+                    self.preset.sampling.lattice_params.inner_radius = v;
+                }
+                UiAction::SetLatticeFocusDistance(v) => {
+                    self.preset.sampling.lattice_params.focus_distance = v;
+                }
+                UiAction::SetLatticeTauCount(n) => {
+                    self.preset.sampling.lattice_params.tau_count = n;
+                }
                 UiAction::LoadPreset => {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Polyform Preset", &["json"])
@@ -1476,6 +1495,13 @@ fn resolve_toggle_param_mut<'a>(
         "camera.lens.shiftY" => Some(&mut preset.camera.lens.shift_y),
         "camera.distortion.k1" => Some(&mut preset.camera.distortion.k1),
         "camera.distortion.k2" => Some(&mut preset.camera.distortion.k2),
+        "camera.distortion.k3" => Some(&mut preset.camera.distortion.k3),
+        "camera.distortion.k4" => Some(&mut preset.camera.distortion.k4),
+        "camera.distortion.p1" => Some(&mut preset.camera.distortion.p1),
+        "camera.distortion.p2" => Some(&mut preset.camera.distortion.p2),
+        "camera.distortion.centerX" => Some(&mut preset.camera.distortion.center_x),
+        "camera.distortion.centerY" => Some(&mut preset.camera.distortion.center_y),
+        "camera.distortion.squeeze" => Some(&mut preset.camera.distortion.squeeze),
         "sampling.scale" => Some(&mut preset.sampling.scale),
         "sampling.density" => Some(&mut preset.sampling.density),
         _ => None,
@@ -1511,7 +1537,6 @@ fn field_to_param_path(field: &ParamField) -> polyform_core::animation::ParamPat
 fn spout_send(
     sender: &mut Option<spout::SpoutSender>,
     renderer: &mut GpuRenderer,
-    surface_texture: &wgpu::SurfaceTexture,
     w: u32,
     h: u32,
 ) {
@@ -1529,7 +1554,8 @@ fn spout_send(
         }
     }
 
-    if let Some(pixels) = renderer.readback_texture(&surface_texture.texture, w, h) {
+    // Read back the offscreen texture at viewport resolution
+    if let Some(pixels) = renderer.readback_offscreen(w, h) {
         if let Some(s) = sender {
             s.send_image(&pixels);
         }

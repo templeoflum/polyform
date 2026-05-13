@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::types::ProjectionMode;
+use crate::preset::LatticeParams;
+use crate::types::{LatticeType, ProjectionMode};
 
 // =============================================================================
 // FrameState — all per-frame resolved values for rendering
@@ -32,6 +33,13 @@ pub struct FrameState {
     pub shift_y: f64,
     pub k1: f64,
     pub k2: f64,
+    pub k3: f64,
+    pub k4: f64,
+    pub p1: f64,
+    pub p2: f64,
+    pub distortion_cx: f64,
+    pub distortion_cy: f64,
+    pub squeeze: f64,
 
     // Quaternion
     pub quat_on: bool,
@@ -42,10 +50,13 @@ pub struct FrameState {
     // Sampling
     pub scale: f64,
     pub density: f64,
+    pub lattice_type: LatticeType,
+    pub lattice_params: LatticeParams,
 
     // Display
     pub palette_key: String,
     pub has_active_layers: bool,
+    pub show_caustic: bool,
 }
 
 /// Flattened layer state: type key, blend amount, and all params as resolved f64 values.
