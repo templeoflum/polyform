@@ -125,7 +125,7 @@ Quaternion uses full `Param` controls for angle and axes (ax, ay, az). Fixed mod
 
 ### Morph System
 
-`MorphState` in `morph.rs` handles cosine-eased crossfade between presets. `blend_presets()` interpolates all Param/ToggleParam fields. Matching layers (by UUID) interpolate; unmatched source layers fade out (blend → 0), unmatched target layers fade in (0 → blend). Animation is disabled (`anim: false`) during the morph — only static values interpolate. When the morph completes, the target preset is assigned directly and animation resumes via the weight system. Discrete fields (enabled, lattice type, quaternion mode) snap at the midpoint.
+`MorphState` in `morph.rs` handles cosine-eased crossfade between presets. `blend_presets()` interpolates all Param/ToggleParam fields. Matching layers (by UUID) interpolate; unmatched source layers fade out (blend → 0), unmatched target layers fade in (0 → blend). Animation is disabled (`anim: false`) during the morph for params that differ between source and target — unchanged params preserve their animation state, so section morphs don't disrupt other sections. When the morph completes, the target preset is assigned directly and animation resumes via the weight system. Discrete fields (enabled, lattice type, quaternion mode) snap at the midpoint. Both full and section preset loads use the morph path.
 
 ### Preset Library
 

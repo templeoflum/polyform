@@ -274,6 +274,11 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 }
 
 fn lerp_param(a: &Param, b: &Param, t: f64) -> Param {
+    // If source and target are identical, preserve as-is (keeps anim state).
+    // This lets section morphs leave unchanged sections animating.
+    if a == b {
+        return a.clone();
+    }
     Param {
         value: lerp(a.value, b.value, t),
         min: lerp(a.min, b.min, t),
@@ -290,6 +295,9 @@ fn lerp_param(a: &Param, b: &Param, t: f64) -> Param {
 }
 
 fn blend_toggle_param(a: &ToggleParam, b: &ToggleParam, t: f64) -> ToggleParam {
+    if a == b {
+        return a.clone();
+    }
     ToggleParam {
         on: if t < 0.5 { a.on } else { b.on },
         param: lerp_param(&a.param, &b.param, t),
