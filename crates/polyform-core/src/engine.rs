@@ -191,6 +191,7 @@ impl AnimationEngine {
         let camera_resolved = self.resolve_camera_values(preset);
         let (quat_angle, quat_axis, quat) = self.resolve_quaternion_values(preset);
         let sampling_resolved = self.resolve_sampling_values(preset);
+        let phosphor_resolved = self.resolve_phosphor_values(preset);
 
         // 6. Build FrameState
         let frame_state = self.build_frame_state(
@@ -202,6 +203,7 @@ impl AnimationEngine {
             quat_axis,
             quat,
             &sampling_resolved,
+            &phosphor_resolved,
         );
 
         (frame_state, actions)
@@ -373,6 +375,16 @@ impl AnimationEngine {
             "camera.distortion.squeeze" => 1.0,
             "sampling.scale" => 0.6,
             "sampling.density" => 27.0,
+            "phosphor.persistence" => 0.0,
+            "phosphor.beamWidth" => 1.5,
+            "phosphor.beamIntensity" => 0.0,
+            "phosphor.gain" => 1.0,
+            "phosphor.blendMix" => 1.0,
+            "phosphor.saturation" => 1.0,
+            "phosphor.bloomIntensity" => 0.0,
+            "phosphor.bloomRadius" => 2.0,
+            "phosphor.bloomThreshold" => 0.3,
+            "phosphor.gamma" => 1.0,
             _ => 0.0,
         }
     }
@@ -385,6 +397,25 @@ impl AnimationEngine {
         SamplingResolved {
             scale: self.resolve_toggle_param(&preset.sampling.scale, "sampling.scale"),
             density: self.resolve_toggle_param(&preset.sampling.density, "sampling.density"),
+        }
+    }
+
+    // =========================================================================
+    // Phosphor resolution
+    // =========================================================================
+
+    fn resolve_phosphor_values(&self, preset: &Preset) -> PhosphorResolved {
+        PhosphorResolved {
+            persistence: self.resolve_toggle_param(&preset.phosphor.persistence, "phosphor.persistence"),
+            beam_width: self.resolve_toggle_param(&preset.phosphor.beam_width, "phosphor.beamWidth"),
+            beam_intensity: self.resolve_toggle_param(&preset.phosphor.beam_intensity, "phosphor.beamIntensity"),
+            gain: self.resolve_toggle_param(&preset.phosphor.gain, "phosphor.gain"),
+            blend_mix: self.resolve_toggle_param(&preset.phosphor.blend_mix, "phosphor.blendMix"),
+            saturation: self.resolve_toggle_param(&preset.phosphor.saturation, "phosphor.saturation"),
+            bloom_intensity: self.resolve_toggle_param(&preset.phosphor.bloom_intensity, "phosphor.bloomIntensity"),
+            bloom_radius: self.resolve_toggle_param(&preset.phosphor.bloom_radius, "phosphor.bloomRadius"),
+            bloom_threshold: self.resolve_toggle_param(&preset.phosphor.bloom_threshold, "phosphor.bloomThreshold"),
+            gamma: self.resolve_toggle_param(&preset.phosphor.gamma, "phosphor.gamma"),
         }
     }
 
@@ -471,6 +502,7 @@ impl AnimationEngine {
         quat_axis: [f64; 3],
         quat: [f64; 4],
         sampling_resolved: &SamplingResolved,
+        phosphor_resolved: &PhosphorResolved,
     ) -> FrameState {
         let operations: Vec<FlatLayerState> = op_resolved
             .iter()
@@ -567,6 +599,16 @@ impl AnimationEngine {
             density: sampling_resolved.density,
             lattice_type: preset.sampling.lattice_type,
             lattice_params: preset.sampling.lattice_params.clone(),
+            persistence: self.resolve_view_transition("phosphor.persistence", phosphor_resolved.persistence),
+            beam_width: self.resolve_view_transition("phosphor.beamWidth", phosphor_resolved.beam_width),
+            beam_intensity: self.resolve_view_transition("phosphor.beamIntensity", phosphor_resolved.beam_intensity),
+            gain: self.resolve_view_transition("phosphor.gain", phosphor_resolved.gain),
+            blend_mix: self.resolve_view_transition("phosphor.blendMix", phosphor_resolved.blend_mix),
+            saturation: self.resolve_view_transition("phosphor.saturation", phosphor_resolved.saturation),
+            bloom_intensity: self.resolve_view_transition("phosphor.bloomIntensity", phosphor_resolved.bloom_intensity),
+            bloom_radius: self.resolve_view_transition("phosphor.bloomRadius", phosphor_resolved.bloom_radius),
+            bloom_threshold: self.resolve_view_transition("phosphor.bloomThreshold", phosphor_resolved.bloom_threshold),
+            gamma: self.resolve_view_transition("phosphor.gamma", phosphor_resolved.gamma),
             palette_key: preset.palette.clone(),
             has_active_layers,
             show_caustic: false, // set by app from overlay state
@@ -799,6 +841,16 @@ impl AnimationEngine {
             "camera.distortion.squeeze" => Some(&mut preset.camera.distortion.squeeze),
             "sampling.scale" => Some(&mut preset.sampling.scale),
             "sampling.density" => Some(&mut preset.sampling.density),
+            "phosphor.persistence" => Some(&mut preset.phosphor.persistence),
+            "phosphor.beamWidth" => Some(&mut preset.phosphor.beam_width),
+            "phosphor.beamIntensity" => Some(&mut preset.phosphor.beam_intensity),
+            "phosphor.gain" => Some(&mut preset.phosphor.gain),
+            "phosphor.blendMix" => Some(&mut preset.phosphor.blend_mix),
+            "phosphor.saturation" => Some(&mut preset.phosphor.saturation),
+            "phosphor.bloomIntensity" => Some(&mut preset.phosphor.bloom_intensity),
+            "phosphor.bloomRadius" => Some(&mut preset.phosphor.bloom_radius),
+            "phosphor.bloomThreshold" => Some(&mut preset.phosphor.bloom_threshold),
+            "phosphor.gamma" => Some(&mut preset.phosphor.gamma),
             _ => None,
         }
     }
@@ -883,6 +935,19 @@ struct CameraResolved {
 struct SamplingResolved {
     scale: f64,
     density: f64,
+}
+
+struct PhosphorResolved {
+    persistence: f64,
+    beam_width: f64,
+    beam_intensity: f64,
+    gain: f64,
+    blend_mix: f64,
+    saturation: f64,
+    bloom_intensity: f64,
+    bloom_radius: f64,
+    bloom_threshold: f64,
+    gamma: f64,
 }
 
 // =============================================================================

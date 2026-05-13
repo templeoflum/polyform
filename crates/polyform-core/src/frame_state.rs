@@ -53,6 +53,18 @@ pub struct FrameState {
     pub lattice_type: LatticeType,
     pub lattice_params: LatticeParams,
 
+    // Phosphor
+    pub persistence: f64,
+    pub beam_width: f64,
+    pub beam_intensity: f64,
+    pub gain: f64,
+    pub blend_mix: f64,
+    pub saturation: f64,
+    pub bloom_intensity: f64,
+    pub bloom_radius: f64,
+    pub bloom_threshold: f64,
+    pub gamma: f64,
+
     // Display
     pub palette_key: String,
     pub has_active_layers: bool,

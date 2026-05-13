@@ -29,6 +29,7 @@ fn schema_compliance() {
     let expected_keys = [
         "schema", "version", "metadata", "tempo", "defaults",
         "palette", "pipeline", "camera", "quaternion", "sampling", "display",
+        "phosphor",
     ];
     for key in &expected_keys {
         assert!(obj.contains_key(*key), "missing top-level key: {key}");
@@ -161,6 +162,28 @@ fn default_values_match_js() {
     assert_eq!(p.sampling.scale.param.value, 0.6);
     assert!(p.sampling.density.on);
     assert_eq!(p.sampling.density.param.value, 27.0);
+
+    // Phosphor
+    assert!(!p.phosphor.persistence.on);
+    assert_eq!(p.phosphor.persistence.param.value, 0.0);
+    assert!(p.phosphor.beam_width.on);
+    assert_eq!(p.phosphor.beam_width.param.value, 1.5);
+    assert!(!p.phosphor.beam_intensity.on);
+    assert_eq!(p.phosphor.beam_intensity.param.value, 0.0);
+    assert!(p.phosphor.gain.on);
+    assert_eq!(p.phosphor.gain.param.value, 1.0);
+    assert!(p.phosphor.blend_mix.on);
+    assert_eq!(p.phosphor.blend_mix.param.value, 1.0);
+    assert!(p.phosphor.saturation.on);
+    assert_eq!(p.phosphor.saturation.param.value, 1.0);
+    assert!(!p.phosphor.bloom_intensity.on);
+    assert_eq!(p.phosphor.bloom_intensity.param.value, 0.0);
+    assert!(!p.phosphor.bloom_radius.on);
+    assert_eq!(p.phosphor.bloom_radius.param.value, 2.0);
+    assert!(!p.phosphor.bloom_threshold.on);
+    assert_eq!(p.phosphor.bloom_threshold.param.value, 0.3);
+    assert!(p.phosphor.gamma.on);
+    assert_eq!(p.phosphor.gamma.param.value, 1.0);
 
     // Display
     assert!(p.display.show_formula);

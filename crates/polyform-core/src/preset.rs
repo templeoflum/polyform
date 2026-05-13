@@ -392,6 +392,63 @@ impl Default for Viewport {
 }
 
 // =============================================================================
+// Phosphor
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Phosphor {
+    #[serde(default = "default_phosphor_persistence")]
+    pub persistence: ToggleParam,
+    #[serde(default = "default_phosphor_beam_width")]
+    pub beam_width: ToggleParam,
+    #[serde(default = "default_phosphor_beam_intensity")]
+    pub beam_intensity: ToggleParam,
+    #[serde(default = "default_phosphor_gain")]
+    pub gain: ToggleParam,
+    #[serde(default = "default_phosphor_blend_mix")]
+    pub blend_mix: ToggleParam,
+    #[serde(default = "default_phosphor_saturation")]
+    pub saturation: ToggleParam,
+    #[serde(default = "default_phosphor_bloom_intensity")]
+    pub bloom_intensity: ToggleParam,
+    #[serde(default = "default_phosphor_bloom_radius")]
+    pub bloom_radius: ToggleParam,
+    #[serde(default = "default_phosphor_bloom_threshold")]
+    pub bloom_threshold: ToggleParam,
+    #[serde(default = "default_phosphor_gamma")]
+    pub gamma: ToggleParam,
+}
+
+fn default_phosphor_persistence() -> ToggleParam { ToggleParam::new(false, 0.0, 0.0, 1.0, false) }
+fn default_phosphor_beam_width() -> ToggleParam { ToggleParam::new(true, 1.5, 0.5, 8.0, false) }
+fn default_phosphor_beam_intensity() -> ToggleParam { ToggleParam::new(false, 0.0, 0.0, 1.0, false) }
+fn default_phosphor_gain() -> ToggleParam { ToggleParam::new(true, 1.0, 0.1, 5.0, false) }
+fn default_phosphor_blend_mix() -> ToggleParam { ToggleParam::new(true, 1.0, 0.0, 1.0, false) }
+fn default_phosphor_saturation() -> ToggleParam { ToggleParam::new(true, 1.0, 0.0, 2.0, false) }
+fn default_phosphor_bloom_intensity() -> ToggleParam { ToggleParam::new(false, 0.0, 0.0, 2.0, false) }
+fn default_phosphor_bloom_radius() -> ToggleParam { ToggleParam::new(false, 2.0, 0.5, 8.0, false) }
+fn default_phosphor_bloom_threshold() -> ToggleParam { ToggleParam::new(false, 0.3, 0.0, 2.0, false) }
+fn default_phosphor_gamma() -> ToggleParam { ToggleParam::new(true, 1.0, 0.5, 3.0, false) }
+
+impl Default for Phosphor {
+    fn default() -> Self {
+        Self {
+            persistence: default_phosphor_persistence(),
+            beam_width: default_phosphor_beam_width(),
+            beam_intensity: default_phosphor_beam_intensity(),
+            gain: default_phosphor_gain(),
+            blend_mix: default_phosphor_blend_mix(),
+            saturation: default_phosphor_saturation(),
+            bloom_intensity: default_phosphor_bloom_intensity(),
+            bloom_radius: default_phosphor_bloom_radius(),
+            bloom_threshold: default_phosphor_bloom_threshold(),
+            gamma: default_phosphor_gamma(),
+        }
+    }
+}
+
+// =============================================================================
 // Top-level Preset
 // =============================================================================
 
@@ -422,6 +479,8 @@ pub struct Preset {
     pub display: Display,
     #[serde(default)]
     pub viewport: Viewport,
+    #[serde(default)]
+    pub phosphor: Phosphor,
 }
 
 fn default_schema() -> String {
@@ -455,6 +514,7 @@ impl Default for Preset {
             sampling: Sampling::default(),
             display: Display::default(),
             viewport: Viewport::default(),
+            phosphor: Phosphor::default(),
         }
     }
 }

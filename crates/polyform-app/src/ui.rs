@@ -392,6 +392,8 @@ pub fn build_ui(
                             camera_lens_section(ui, preset, frame_state, &mut actions);
                             ui.separator();
                             camera_distortion_section(ui, preset, frame_state, &mut actions);
+                            ui.separator();
+                            phosphor_section(ui, preset, frame_state, &mut actions);
                         });
                 });
             }
@@ -416,6 +418,8 @@ pub fn build_ui(
                     camera_position_section(ui, preset, frame_state, &mut actions);
                     ui.separator();
                     camera_lens_section(ui, preset, frame_state, &mut actions);
+                    ui.separator();
+                    phosphor_section(ui, preset, frame_state, &mut actions);
                     ui.separator();
                     quaternion_section(ui, preset, frame_state, &mut actions);
                 });
@@ -1030,6 +1034,16 @@ pub fn frame_state_view_value(fs: &FrameState, view_key: &str) -> Option<f64> {
         "quaternion.ax" => Some(fs.quat_axis[0]),
         "quaternion.ay" => Some(fs.quat_axis[1]),
         "quaternion.az" => Some(fs.quat_axis[2]),
+        "phosphor.persistence" => Some(fs.persistence),
+        "phosphor.beamWidth" => Some(fs.beam_width),
+        "phosphor.beamIntensity" => Some(fs.beam_intensity),
+        "phosphor.gain" => Some(fs.gain),
+        "phosphor.blendMix" => Some(fs.blend_mix),
+        "phosphor.saturation" => Some(fs.saturation),
+        "phosphor.bloomIntensity" => Some(fs.bloom_intensity),
+        "phosphor.bloomRadius" => Some(fs.bloom_radius),
+        "phosphor.bloomThreshold" => Some(fs.bloom_threshold),
+        "phosphor.gamma" => Some(fs.gamma),
         _ => None,
     }
 }
@@ -1301,6 +1315,49 @@ fn sampling_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&Fra
         }
         LatticeType::Cartesian | LatticeType::Hex => {}
     }
+}
+
+// =============================================================================
+// Phosphor section
+// =============================================================================
+
+fn phosphor_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
+    let ph = &preset.phosphor;
+    let all_keys: &[&str] = &[
+        "phosphor.persistence", "phosphor.beamWidth", "phosphor.beamIntensity",
+        "phosphor.gain", "phosphor.blendMix", "phosphor.saturation",
+        "phosphor.bloomIntensity", "phosphor.bloomRadius", "phosphor.bloomThreshold",
+        "phosphor.gamma",
+    ];
+    let any_on = ph.persistence.on || ph.beam_width.on || ph.beam_intensity.on
+        || ph.gain.on || ph.blend_mix.on || ph.saturation.on
+        || ph.bloom_intensity.on || ph.bloom_radius.on || ph.bloom_threshold.on
+        || ph.gamma.on;
+
+    // Header with group toggle
+    ui.horizontal(|ui| {
+        let mut group_on = any_on;
+        if ui.checkbox(&mut group_on, "").changed() {
+            for key in all_keys {
+                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
+            }
+        }
+    });
+
+    egui::CollapsingHeader::new("Phosphor")
+        .default_open(false)
+        .show(ui, |ui| {
+            toggle_param_widget(ui, "persistence", &ph.persistence, "phosphor.persistence", frame_state, actions);
+            toggle_param_widget(ui, "beam width", &ph.beam_width, "phosphor.beamWidth", frame_state, actions);
+            toggle_param_widget(ui, "beam drive", &ph.beam_intensity, "phosphor.beamIntensity", frame_state, actions);
+            toggle_param_widget(ui, "gain", &ph.gain, "phosphor.gain", frame_state, actions);
+            toggle_param_widget(ui, "blend mix", &ph.blend_mix, "phosphor.blendMix", frame_state, actions);
+            toggle_param_widget(ui, "saturation", &ph.saturation, "phosphor.saturation", frame_state, actions);
+            toggle_param_widget(ui, "bloom", &ph.bloom_intensity, "phosphor.bloomIntensity", frame_state, actions);
+            toggle_param_widget(ui, "bloom radius", &ph.bloom_radius, "phosphor.bloomRadius", frame_state, actions);
+            toggle_param_widget(ui, "bloom thresh", &ph.bloom_threshold, "phosphor.bloomThreshold", frame_state, actions);
+            toggle_param_widget(ui, "gamma", &ph.gamma, "phosphor.gamma", frame_state, actions);
+        });
 }
 
 // =============================================================================

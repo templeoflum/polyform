@@ -97,8 +97,43 @@ pub struct RenderUniforms {
     pub squeeze: f32,                     // 4
     pub caustic_on: u32,                  // 4
     pub caustic_threshold: f32,           // 4
-    pub _pad: [f32; 1],                   // 4 (align to 16)
-}                                         // Total: 128 bytes
+    pub beam_width: f32,                  // 4  (replaces _pad)
+    // --- new 16-byte block ---
+    pub beam_intensity: f32,              // 4
+    pub gain: f32,                        // 4
+    pub blend_mix: f32,                   // 4
+    pub verts_per_line: u32,              // 4  (SAMPLES + 1 = 81)
+    // --- new 16-byte block ---
+    pub viewport_width: f32,              // 4
+    pub viewport_height: f32,             // 4
+    pub _pad2: [f32; 2],                  // 8 (align to 16)
+}                                         // Total: 160 bytes
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct DecayUniforms {
+    pub decay_factor: f32,
+    pub _pad: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct CompositeUniforms {
+    pub bg_color: [f32; 4],        // 16
+    pub warp_color: [f32; 4],      // 16
+    pub bloom_intensity: f32,      // 4
+    pub saturation: f32,           // 4
+    pub gamma: f32,                // 4
+    pub _pad: f32,                 // 4
+}                                   // Total: 48 bytes
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct BloomUniforms {
+    pub texel_size: [f32; 2],      // 8 — 1/width, 1/height of bloom texture
+    pub threshold: f32,            // 4
+    pub radius: f32,               // 4
+}                                   // Total: 16 bytes
 
 // =============================================================================
 // Type-index mappings (static)
@@ -241,21 +276,55 @@ pub struct GpuRenderer {
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group_layout: wgpu::BindGroupLayout,
 
-    // Render pipeline
+    // Render pipeline (beam quads)
     render_pipeline: wgpu::RenderPipeline,
     render_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Decay pipeline (accum_src × k → accum_dst)
+    decay_pipeline: wgpu::RenderPipeline,
+    decay_bind_group_layout: wgpu::BindGroupLayout,
+    decay_uniforms_buf: wgpu::Buffer,
+
+    // Bloom pipelines (extract, blur_h, blur_v)
+    bloom_extract_pipeline: wgpu::RenderPipeline,
+    bloom_blur_h_pipeline: wgpu::RenderPipeline,
+    bloom_blur_v_pipeline: wgpu::RenderPipeline,
+    bloom_bind_group_layout: wgpu::BindGroupLayout,
+    bloom_uniforms_buf: wgpu::Buffer,
+
+    // Bloom textures (half resolution, Rgba16Float)
+    bloom_a_texture: Option<wgpu::Texture>,
+    bloom_a_view: Option<wgpu::TextureView>,
+    bloom_b_texture: Option<wgpu::Texture>,
+    bloom_b_view: Option<wgpu::TextureView>,
+    bloom_width: u32,
+    bloom_height: u32,
+
+    // Composite pipeline (accum + bloom → offscreen LDR)
+    composite_pipeline: wgpu::RenderPipeline,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    composite_uniforms_buf: wgpu::Buffer,
 
     // Blit pipeline (offscreen -> surface)
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group_layout: wgpu::BindGroupLayout,
     blit_sampler: wgpu::Sampler,
 
-    // Offscreen render target
+    // Offscreen render target (LDR output for Spout + blit)
     offscreen_texture: Option<wgpu::Texture>,
     offscreen_view: Option<wgpu::TextureView>,
     offscreen_width: u32,
     offscreen_height: u32,
     surface_format: wgpu::TextureFormat,
+
+    // Ping-pong HDR accumulation buffers (Rgba16Float)
+    accum_a_texture: Option<wgpu::Texture>,
+    accum_a_view: Option<wgpu::TextureView>,
+    accum_b_texture: Option<wgpu::Texture>,
+    accum_b_view: Option<wgpu::TextureView>,
+    accum_width: u32,
+    accum_height: u32,
+    accum_ping: bool,
 
     // Buffers
     grid_input_buf: wgpu::Buffer,
@@ -426,7 +495,7 @@ impl GpuRenderer {
                     compilation_options: Default::default(),
                 },
                 primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::LineStrip,
+                    topology: wgpu::PrimitiveTopology::TriangleList,
                     strip_index_format: None,
                     front_face: wgpu::FrontFace::Ccw,
                     cull_mode: None,
@@ -440,8 +509,23 @@ impl GpuRenderer {
                     module: &render_shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: surface_format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        // Beam quads render into HDR accumulation buffer (Rgba16Float)
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: Some(wgpu::BlendState {
+                            // Premultiplied alpha: src_color already has alpha baked in.
+                            // blend_mix=1 → alpha output is 0 → pure additive
+                            // blend_mix=0 → alpha output is intensity → standard alpha blend
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: Default::default(),
@@ -523,6 +607,258 @@ impl GpuRenderer {
             ..Default::default()
         });
 
+        // --- Decay shader (accum_src × k → accum_dst) ---
+        let decay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("decay.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/decay.wgsl").into()),
+        });
+
+        let decay_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("decay_bind_group_layout"),
+                entries: &[
+                    // @binding(0): src texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // @binding(1): sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // @binding(2): decay uniforms
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let decay_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("decay_pipeline_layout"),
+                bind_group_layouts: &[&decay_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let hdr_format = wgpu::TextureFormat::Rgba16Float;
+
+        let decay_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("decay_pipeline"),
+                layout: Some(&decay_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &decay_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &decay_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: hdr_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview: None,
+                cache: None,
+            });
+
+        // --- Composite shader (accum + bloom → offscreen LDR) ---
+        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("composite.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite.wgsl").into()),
+        });
+
+        let composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("composite_bind_group_layout"),
+                entries: &[
+                    // @binding(0): accum texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // @binding(1): bloom texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // @binding(2): sampler
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // @binding(3): composite uniforms
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let composite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("composite_pipeline_layout"),
+                bind_group_layouts: &[&composite_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let composite_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("composite_pipeline"),
+                layout: Some(&composite_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &composite_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &composite_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: surface_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview: None,
+                cache: None,
+            });
+
+        // --- Bloom pipelines (extract, blur_h, blur_v) ---
+        let bloom_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("bloom.wgsl"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/bloom.wgsl").into()),
+        });
+
+        let bloom_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("bloom_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let bloom_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("bloom_pipeline_layout"),
+                bind_group_layouts: &[&bloom_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let make_bloom_pipeline = |label: &str, entry_point: &str| -> wgpu::RenderPipeline {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&bloom_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &bloom_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &bloom_shader,
+                    entry_point: Some(entry_point),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: hdr_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview: None,
+                cache: None,
+            })
+        };
+
+        let bloom_extract_pipeline = make_bloom_pipeline("bloom_extract_pipeline", "fs_extract");
+        let bloom_blur_h_pipeline = make_bloom_pipeline("bloom_blur_h_pipeline", "fs_blur_h");
+        let bloom_blur_v_pipeline = make_bloom_pipeline("bloom_blur_v_pipeline", "fs_blur_v");
+
         // --- Buffers (pre-allocated for max density) ---
         let grid_input_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("grid_input"),
@@ -566,6 +902,27 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
 
+        let decay_uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("decay_uniforms"),
+            size: std::mem::size_of::<DecayUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let composite_uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("composite_uniforms"),
+            size: std::mem::size_of::<CompositeUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bloom_uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bloom_uniforms"),
+            size: std::mem::size_of::<BloomUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let mut renderer = Self {
             device,
             queue,
@@ -573,6 +930,23 @@ impl GpuRenderer {
             compute_bind_group_layout,
             render_pipeline,
             render_bind_group_layout,
+            decay_pipeline,
+            decay_bind_group_layout,
+            decay_uniforms_buf,
+            bloom_extract_pipeline,
+            bloom_blur_h_pipeline,
+            bloom_blur_v_pipeline,
+            bloom_bind_group_layout,
+            bloom_uniforms_buf,
+            bloom_a_texture: None,
+            bloom_a_view: None,
+            bloom_b_texture: None,
+            bloom_b_view: None,
+            bloom_width: 0,
+            bloom_height: 0,
+            composite_pipeline,
+            composite_bind_group_layout,
+            composite_uniforms_buf,
             blit_pipeline,
             blit_bind_group_layout,
             blit_sampler,
@@ -581,6 +955,13 @@ impl GpuRenderer {
             offscreen_width: 0,
             offscreen_height: 0,
             surface_format,
+            accum_a_texture: None,
+            accum_a_view: None,
+            accum_b_texture: None,
+            accum_b_view: None,
+            accum_width: 0,
+            accum_height: 0,
+            accum_ping: true,
             grid_input_buf,
             grid_output_buf,
             pipeline_uniforms_buf,
@@ -1048,6 +1429,84 @@ impl GpuRenderer {
     }
 
     /// Ensure the offscreen texture matches the requested viewport dimensions.
+    fn ensure_accum_textures(&mut self, width: u32, height: u32) {
+        if self.accum_width == width && self.accum_height == height
+            && self.accum_a_texture.is_some()
+        {
+            return;
+        }
+
+        let hdr_format = wgpu::TextureFormat::Rgba16Float;
+        for (label, tex_slot, view_slot) in [
+            ("accum_a", &mut self.accum_a_texture as *mut _, &mut self.accum_a_view as *mut _),
+            ("accum_b", &mut self.accum_b_texture as *mut _, &mut self.accum_b_view as *mut _),
+        ] {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: hdr_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            // SAFETY: we're assigning to distinct fields through raw pointers
+            // to work around the borrow checker with the loop pattern
+            unsafe {
+                *tex_slot = Some(texture);
+                *view_slot = Some(view);
+            }
+        }
+        self.accum_width = width;
+        self.accum_height = height;
+        self.accum_ping = true;
+    }
+
+    fn ensure_bloom_textures(&mut self, width: u32, height: u32) {
+        if self.bloom_width == width && self.bloom_height == height
+            && self.bloom_a_texture.is_some()
+        {
+            return;
+        }
+
+        let hdr_format = wgpu::TextureFormat::Rgba16Float;
+        for (label, tex_slot, view_slot) in [
+            ("bloom_a", &mut self.bloom_a_texture as *mut _, &mut self.bloom_a_view as *mut _),
+            ("bloom_b", &mut self.bloom_b_texture as *mut _, &mut self.bloom_b_view as *mut _),
+        ] {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: hdr_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            unsafe {
+                *tex_slot = Some(texture);
+                *view_slot = Some(view);
+            }
+        }
+        self.bloom_width = width;
+        self.bloom_height = height;
+    }
+
+    /// Get (src, dst) accumulation texture views based on ping-pong state.
+    fn accum_views(&self) -> (&wgpu::TextureView, &wgpu::TextureView) {
+        if self.accum_ping {
+            (self.accum_a_view.as_ref().unwrap(), self.accum_b_view.as_ref().unwrap())
+        } else {
+            (self.accum_b_view.as_ref().unwrap(), self.accum_a_view.as_ref().unwrap())
+        }
+    }
+
     fn ensure_offscreen(&mut self, width: u32, height: u32) {
         if self.offscreen_width == width && self.offscreen_height == height && self.offscreen_texture.is_some() {
             return;
@@ -1087,10 +1546,15 @@ impl GpuRenderer {
         frame_state: &FrameState,
         render_width: u32,
         render_height: u32,
+        dt: f64,
         surface: &wgpu::Surface,
         surface_config: &wgpu::SurfaceConfiguration,
     ) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
-        // 0. Ensure offscreen texture is the right size
+        // 0. Ensure textures are the right size
+        self.ensure_accum_textures(render_width, render_height);
+        let bloom_w = (render_width / 2).max(1);
+        let bloom_h = (render_height / 2).max(1);
+        self.ensure_bloom_textures(bloom_w, bloom_h);
         self.ensure_offscreen(render_width, render_height);
 
         // 1. Update grid (with smooth transitions for lattice type changes)
@@ -1146,9 +1610,9 @@ impl GpuRenderer {
         // Resolve palette colors
         let pal = palette::get_palette(&frame_state.palette_key)
             .unwrap_or_else(|| palette::get_palette("phosphor").unwrap());
-        // Always use grid color for the lattice lines — the color represents
-        // the grid substrate itself, not whether transforms are active.
         let line_color = parse_hex_color(&pal.grid);
+        let bg_color_arr = parse_hex_color(&pal.bg);
+        let warp_color_arr = parse_hex_color(&pal.warp);
 
         let render_uniforms = RenderUniforms {
             view_projection: camera.view_projection.to_cols_array_2d(),
@@ -1164,12 +1628,51 @@ impl GpuRenderer {
             squeeze: frame_state.squeeze as f32,
             caustic_on: if frame_state.show_caustic { 1 } else { 0 },
             caustic_threshold: 0.1,
-            _pad: [0.0; 1],
+            beam_width: frame_state.beam_width as f32,
+            beam_intensity: frame_state.beam_intensity as f32,
+            gain: frame_state.gain as f32,
+            blend_mix: frame_state.blend_mix as f32,
+            verts_per_line: SAMPLES + 1,
+            viewport_width: render_width as f32,
+            viewport_height: render_height as f32,
+            _pad2: [0.0; 2],
         };
         self.queue.write_buffer(
             &self.render_uniforms_buf,
             0,
             bytemuck::bytes_of(&render_uniforms),
+        );
+
+        // Upload decay uniforms
+        let persistence = frame_state.persistence as f32;
+        let decay_factor = if persistence <= 0.0 {
+            0.0_f32
+        } else {
+            persistence.powf(dt as f32 * 60.0)
+        };
+        let decay_uniforms = DecayUniforms {
+            decay_factor,
+            _pad: [0.0; 3],
+        };
+        self.queue.write_buffer(
+            &self.decay_uniforms_buf,
+            0,
+            bytemuck::bytes_of(&decay_uniforms),
+        );
+
+        // Upload composite uniforms
+        let composite_uniforms = CompositeUniforms {
+            bg_color: bg_color_arr,
+            warp_color: warp_color_arr,
+            bloom_intensity: frame_state.bloom_intensity as f32,
+            saturation: frame_state.saturation as f32,
+            gamma: frame_state.gamma as f32,
+            _pad: 0.0,
+        };
+        self.queue.write_buffer(
+            &self.composite_uniforms_buf,
+            0,
+            bytemuck::bytes_of(&composite_uniforms),
         );
 
         // 5. Get surface texture
@@ -1179,7 +1682,7 @@ impl GpuRenderer {
             label: Some("frame_encoder"),
         });
 
-        // 6. Compute pass
+        // 6. Compute pass (grid transform — unchanged)
         {
             let compute_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("compute_bind_group"),
@@ -1203,8 +1706,53 @@ impl GpuRenderer {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
-        // 7. Render pass -> offscreen texture
-        let offscreen_view = self.offscreen_view.as_ref().unwrap();
+        // Get accum views (src, dst) for this frame
+        let (accum_src_view, accum_dst_view) = self.accum_views();
+        // Need raw pointers to avoid borrow issues with &self
+        let accum_src_ptr = accum_src_view as *const wgpu::TextureView;
+        let accum_dst_ptr = accum_dst_view as *const wgpu::TextureView;
+
+        // 7. Decay pass: accum_src × k → accum_dst
+        {
+            let decay_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("decay_bind_group"),
+                layout: &self.decay_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(unsafe { &*accum_src_ptr }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.decay_uniforms_buf.as_entire_binding(),
+                    },
+                ],
+            });
+
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("decay_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: unsafe { &*accum_dst_ptr },
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.decay_pipeline);
+            pass.set_bind_group(0, &decay_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // 8. Beam render pass: instanced quads → accum_dst (additive, LoadOp::Load)
         {
             let render_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("render_bind_group"),
@@ -1215,21 +1763,13 @@ impl GpuRenderer {
                 ],
             });
 
-            let bg = parse_hex_color(&pal.bg);
-            let bg_color = wgpu::Color {
-                r: bg[0] as f64,
-                g: bg[1] as f64,
-                b: bg[2] as f64,
-                a: 1.0,
-            };
-
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("render_pass"),
+                label: Some("beam_render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: offscreen_view,
+                    view: unsafe { &*accum_dst_ptr },
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg_color),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -1240,16 +1780,196 @@ impl GpuRenderer {
 
             pass.set_pipeline(&self.render_pipeline);
             pass.set_bind_group(0, &render_bind_group, &[]);
+            let num_segments = self.lines_count * SAMPLES;
+            pass.draw(0..6, 0..num_segments);
+        }
 
-            // Draw each line as a separate line strip
-            let verts_per_line = (SAMPLES + 1) as u32;
-            for line_i in 0..self.lines_count {
-                let start = line_i * verts_per_line;
-                pass.draw(start..start + verts_per_line, 0..1);
+        // 9. Bloom passes (skip when bloom_intensity = 0)
+        let bloom_active = frame_state.bloom_intensity > 0.0;
+        let bloom_a_view_ptr = self.bloom_a_view.as_ref().unwrap() as *const wgpu::TextureView;
+        let bloom_b_view_ptr = self.bloom_b_view.as_ref().unwrap() as *const wgpu::TextureView;
+
+        if bloom_active {
+            // Upload bloom uniforms
+            let bloom_uniforms = BloomUniforms {
+                texel_size: [1.0 / bloom_w as f32, 1.0 / bloom_h as f32],
+                threshold: frame_state.bloom_threshold as f32,
+                radius: frame_state.bloom_radius as f32,
+            };
+            self.queue.write_buffer(
+                &self.bloom_uniforms_buf,
+                0,
+                bytemuck::bytes_of(&bloom_uniforms),
+            );
+
+            // 9a. Extract: accum_dst → bloom_a
+            {
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom_extract_bind_group"),
+                    layout: &self.bloom_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(unsafe { &*accum_dst_ptr }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.bloom_uniforms_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("bloom_extract_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: unsafe { &*bloom_a_view_ptr },
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.bloom_extract_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+
+            // 9b. Blur H: bloom_a → bloom_b
+            {
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom_blur_h_bind_group"),
+                    layout: &self.bloom_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(unsafe { &*bloom_a_view_ptr }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.bloom_uniforms_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("bloom_blur_h_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: unsafe { &*bloom_b_view_ptr },
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.bloom_blur_h_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
+
+            // 9c. Blur V: bloom_b → bloom_a (final bloom result)
+            {
+                let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom_blur_v_bind_group"),
+                    layout: &self.bloom_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(unsafe { &*bloom_b_view_ptr }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.bloom_uniforms_buf.as_entire_binding(),
+                        },
+                    ],
+                });
+
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("bloom_blur_v_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: unsafe { &*bloom_a_view_ptr },
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_pipeline(&self.bloom_blur_v_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
 
-        // 8. Blit pass: offscreen -> surface with letterboxing
+        // 10. Composite pass: accum_dst + bloom_a → offscreen (LDR)
+        let offscreen_view = self.offscreen_view.as_ref().unwrap();
+        {
+            // bloom_a has the final bloom result (or is black if bloom was skipped)
+            let composite_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("composite_bind_group"),
+                layout: &self.composite_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(unsafe { &*accum_dst_ptr }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(unsafe { &*bloom_a_view_ptr }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.blit_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.composite_uniforms_buf.as_entire_binding(),
+                    },
+                ],
+            });
+
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("composite_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: offscreen_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.composite_pipeline);
+            pass.set_bind_group(0, &composite_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+
+        // 10. Blit pass: offscreen → surface with letterboxing
         {
             let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -1295,6 +2015,9 @@ impl GpuRenderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // 11. Swap ping-pong for next frame
+        self.accum_ping = !self.accum_ping;
 
         Ok(output)
     }

@@ -37,6 +37,26 @@ pub enum QuaternionMode {
 }
 
 // =============================================================================
+// LatticeType
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LatticeType {
+    Cartesian,
+    Polar,
+    Hex,
+    LogPolar,
+    Bipolar,
+}
+
+impl Default for LatticeType {
+    fn default() -> Self {
+        Self::Cartesian
+    }
+}
+
+// =============================================================================
 // PhaseModulator — optional FM modulation per param
 // =============================================================================
 

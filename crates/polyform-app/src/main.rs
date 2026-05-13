@@ -107,6 +107,7 @@ struct App {
     preset: Preset,
     registry: Registry,
     last_frame: Instant,
+    current_dt: f64,
     frame_state: Option<FrameState>,
 
     // Mouse orbit state
@@ -160,6 +161,7 @@ impl App {
             preset,
             registry: Registry::new(),
             last_frame: Instant::now(),
+            current_dt: 1.0 / 60.0,
             frame_state: None,
             orbit_dragging: false,
             last_cursor_pos: None,
@@ -385,6 +387,7 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
+        self.current_dt = dt;
 
         self.fps_counter.push(dt);
 
@@ -507,7 +510,7 @@ impl App {
         let render_result = if let (Some(renderer), Some(output)) =
             (&mut self.renderer, &self.output)
         {
-            match renderer.render(frame_state, vp_w, vp_h, &output.surface, &output.surface_config) {
+            match renderer.render(frame_state, vp_w, vp_h, self.current_dt, &output.surface, &output.surface_config) {
                 Ok(surface_texture) => {
                     // Spout readback before overlays (clean lattice only)
                     #[cfg(target_os = "windows")]
@@ -1505,6 +1508,16 @@ fn resolve_toggle_param_mut<'a>(
         "camera.distortion.squeeze" => Some(&mut preset.camera.distortion.squeeze),
         "sampling.scale" => Some(&mut preset.sampling.scale),
         "sampling.density" => Some(&mut preset.sampling.density),
+        "phosphor.persistence" => Some(&mut preset.phosphor.persistence),
+        "phosphor.beamWidth" => Some(&mut preset.phosphor.beam_width),
+        "phosphor.beamIntensity" => Some(&mut preset.phosphor.beam_intensity),
+        "phosphor.gain" => Some(&mut preset.phosphor.gain),
+        "phosphor.blendMix" => Some(&mut preset.phosphor.blend_mix),
+        "phosphor.saturation" => Some(&mut preset.phosphor.saturation),
+        "phosphor.bloomIntensity" => Some(&mut preset.phosphor.bloom_intensity),
+        "phosphor.bloomRadius" => Some(&mut preset.phosphor.bloom_radius),
+        "phosphor.bloomThreshold" => Some(&mut preset.phosphor.bloom_threshold),
+        "phosphor.gamma" => Some(&mut preset.phosphor.gamma),
         _ => None,
     }
 }
