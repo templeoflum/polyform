@@ -269,6 +269,10 @@ pub struct OverlayState {
     pub show_active_layers: bool,
     pub show_fps: bool,
     pub show_caustic: bool,
+    pub show_domain_coloring: bool,
+    pub show_curl: bool,
+    pub show_conformal: bool,
+    pub show_normal_shading: bool,
     pub viewport_width: u32,
     pub viewport_height: u32,
     #[cfg(target_os = "windows")]
@@ -285,6 +289,10 @@ impl Default for OverlayState {
             show_active_layers: true,
             show_fps: false,
             show_caustic: false,
+            show_domain_coloring: false,
+            show_curl: false,
+            show_conformal: false,
+            show_normal_shading: false,
             viewport_width: 1920,
             viewport_height: 1080,
             #[cfg(target_os = "windows")]
@@ -325,6 +333,10 @@ pub fn build_ui(
                     ui.checkbox(&mut overlay.show_active_layers, "Layers");
                     ui.checkbox(&mut overlay.show_fps, "FPS");
                     ui.checkbox(&mut overlay.show_caustic, "Caustic");
+                    ui.checkbox(&mut overlay.show_domain_coloring, "Domain");
+                    ui.checkbox(&mut overlay.show_curl, "Curl");
+                    ui.checkbox(&mut overlay.show_conformal, "Conformal");
+                    ui.checkbox(&mut overlay.show_normal_shading, "Normals");
                 });
 
                 viewport_section(ui, overlay, &mut actions);

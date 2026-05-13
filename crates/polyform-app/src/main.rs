@@ -394,6 +394,11 @@ impl ApplicationHandler for App {
         let (mut frame_state, actions) = self.engine.tick(&self.preset, dt, dt);
         self.engine.apply_actions(&mut self.preset, &actions);
         frame_state.show_caustic = self.overlay.show_caustic;
+        frame_state.color_mode = if self.overlay.show_domain_coloring { 1 }
+            else if self.overlay.show_curl { 2 }
+            else if self.overlay.show_conformal { 3 }
+            else { 0 };
+        frame_state.normal_shading = self.overlay.show_normal_shading;
         self.frame_state = Some(frame_state);
 
         // Render output window directly here — request_redraw() is unreliable
@@ -478,6 +483,34 @@ impl App {
                             }
                             winit::keyboard::KeyCode::KeyC => {
                                 self.overlay.show_caustic = !self.overlay.show_caustic;
+                            }
+                            winit::keyboard::KeyCode::KeyV => {
+                                // Toggle domain coloring (radio: turns off curl/conformal)
+                                self.overlay.show_domain_coloring = !self.overlay.show_domain_coloring;
+                                if self.overlay.show_domain_coloring {
+                                    self.overlay.show_curl = false;
+                                    self.overlay.show_conformal = false;
+                                }
+                            }
+                            winit::keyboard::KeyCode::KeyR => {
+                                // Toggle curl (radio: turns off domain/conformal)
+                                self.overlay.show_curl = !self.overlay.show_curl;
+                                if self.overlay.show_curl {
+                                    self.overlay.show_domain_coloring = false;
+                                    self.overlay.show_conformal = false;
+                                }
+                            }
+                            winit::keyboard::KeyCode::KeyX => {
+                                // Toggle conformal defect (radio: turns off domain/curl)
+                                self.overlay.show_conformal = !self.overlay.show_conformal;
+                                if self.overlay.show_conformal {
+                                    self.overlay.show_domain_coloring = false;
+                                    self.overlay.show_curl = false;
+                                }
+                            }
+                            winit::keyboard::KeyCode::KeyN => {
+                                // Toggle normal shading (independent)
+                                self.overlay.show_normal_shading = !self.overlay.show_normal_shading;
                             }
                             _ => {}
                         }

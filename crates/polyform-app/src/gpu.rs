@@ -43,10 +43,18 @@ pub struct GridVertex {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct TransformedVertex {
-    pub vx: f32,
-    pub vy: f32,
-    pub vz: f32,
-    pub det_j: f32,
+    pub vx: f32,               // world x
+    pub vy: f32,               // world y (height from lift)
+    pub vz: f32,               // world z
+    pub det_j: f32,            // Jacobian determinant
+    pub curl: f32,             // dv/dx - du/dy
+    pub conformal_defect: f32, // Cauchy-Riemann violation
+    pub nx: f32,               // surface normal x
+    pub ny: f32,               // surface normal y
+    pub nz: f32,               // surface normal z
+    pub tx: f32,               // post-ops x (for domain coloring)
+    pub ty: f32,               // post-ops y (for domain coloring)
+    pub _pad: f32,             // pad to 48 bytes (12 * f32)
 }
 
 #[repr(C)]
@@ -78,7 +86,7 @@ pub struct PipelineUniforms {
     pub num_ops: u32,
     pub num_lifts: u32,
     pub any_needs_jacobian: u32,
-    pub compute_caustic: u32,
+    pub compute_differential: u32,
 }
 
 #[repr(C)]
@@ -106,7 +114,8 @@ pub struct RenderUniforms {
     // --- new 16-byte block ---
     pub viewport_width: f32,              // 4
     pub viewport_height: f32,             // 4
-    pub _pad2: [f32; 2],                  // 8 (align to 16)
+    pub color_mode: u32,                  // 4 (0=palette, 1=domain, 2=curl, 3=conformal)
+    pub normal_shading_on: u32,           // 4 (0 or 1)
 }                                         // Total: 160 bytes
 
 #[repr(C)]
@@ -1567,11 +1576,18 @@ impl GpuRenderer {
         let lifts = self.pack_lifts(&frame_state.lifts);
 
         // 3. Upload pipeline uniforms
+        // Compute differential tier:
+        // 0 = off, 1 = det_j only, 2 = full 2D Jacobian, 3 = 3D normals
+        let compute_differential = if frame_state.normal_shading { 3 }
+            else if frame_state.color_mode >= 2 { 2 }
+            else if frame_state.show_caustic || frame_state.any_lift_needs_jacobian { 1 }
+            else { 0u32 };
+
         let pipeline_uniforms = PipelineUniforms {
             num_ops: ops.len() as u32,
             num_lifts: lifts.len() as u32,
             any_needs_jacobian: if frame_state.any_lift_needs_jacobian { 1 } else { 0 },
-            compute_caustic: if frame_state.show_caustic { 1 } else { 0 },
+            compute_differential,
         };
         self.queue.write_buffer(
             &self.pipeline_uniforms_buf,
@@ -1635,7 +1651,8 @@ impl GpuRenderer {
             verts_per_line: SAMPLES + 1,
             viewport_width: render_width as f32,
             viewport_height: render_height as f32,
-            _pad2: [0.0; 2],
+            color_mode: frame_state.color_mode,
+            normal_shading_on: if frame_state.normal_shading { 1 } else { 0 },
         };
         self.queue.write_buffer(
             &self.render_uniforms_buf,

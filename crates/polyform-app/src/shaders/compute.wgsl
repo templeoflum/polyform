@@ -13,6 +13,14 @@ struct TransformedVertex {
     vy: f32,
     vz: f32,
     det_j: f32,
+    curl: f32,
+    conformal_defect: f32,
+    nx: f32,
+    ny: f32,
+    nz: f32,
+    tx: f32,
+    ty: f32,
+    _pad: f32,
 }
 
 struct OpDescriptor {
@@ -36,7 +44,7 @@ struct PipelineUniforms {
     num_ops: u32,
     num_lifts: u32,
     any_needs_jacobian: u32,
-    compute_caustic: u32,
+    compute_differential: u32,
 }
 
 @group(0) @binding(0) var<storage, read> grid_input: array<GridVertex>;
@@ -283,21 +291,24 @@ fn apply_ops_pipeline(x0: f32, y0: f32) -> vec2<f32> {
 }
 
 // =============================================================================
-// Numerical Jacobian
+// Extended Jacobian — returns (det_j, curl, conformal_defect)
 // =============================================================================
 
-fn numerical_jacobian(x0: f32, y0: f32) -> f32 {
+fn extended_jacobian(x0: f32, y0: f32) -> vec3<f32> {
     let center = apply_ops_pipeline(x0, y0);
     let dx = apply_ops_pipeline(x0 + EPS, y0);
     let dy = apply_ops_pipeline(x0, y0 + EPS);
 
-    let dfdx_x = (dx.x - center.x) / EPS;
-    let dfdx_y = (dx.y - center.y) / EPS;
-    let dfdy_x = (dy.x - center.x) / EPS;
-    let dfdy_y = (dy.y - center.y) / EPS;
+    let dudx = (dx.x - center.x) / EPS;  // du/dx
+    let dudy = (dy.x - center.x) / EPS;  // du/dy
+    let dvdx = (dx.y - center.y) / EPS;  // dv/dx
+    let dvdy = (dy.y - center.y) / EPS;  // dv/dy
 
-    // det(J) = dfdx_x * dfdy_y - dfdx_y * dfdy_x
-    return dfdx_x * dfdy_y - dfdx_y * dfdy_x;
+    let det_j = dudx * dvdy - dvdx * dudy;
+    let curl_val = dvdx - dudy;
+    let conformal = abs(dudx - dvdy) + abs(dudy + dvdx);  // Cauchy-Riemann violation
+
+    return vec3<f32>(det_j, curl_val, conformal);
 }
 
 // =============================================================================
@@ -441,6 +452,55 @@ fn dispatch_lift(type_idx: u32, tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32
     }
 }
 
+// Apply the full lift pipeline to post-ops coordinates
+fn apply_lift_pipeline(ops_x: f32, ops_y: f32, x0: f32, y0: f32, det_j: f32) -> vec3<f32> {
+    var world_x = ops_x;
+    var world_y: f32 = 0.0;
+    var world_z = ops_y;
+
+    for (var i: u32 = 0u; i < uniforms.num_lifts; i = i + 1u) {
+        let lift = lift_chain[i];
+        if lift.blend <= 0.0 { continue; }
+        let disp = dispatch_lift(lift.type_index, ops_x, ops_y, lift.params, x0, y0, det_j);
+        if lift.blend >= 1.0 {
+            world_x = world_x + disp.x;
+            world_y = world_y + disp.y;
+            world_z = world_z + disp.z;
+        } else {
+            world_x = world_x + disp.x * lift.blend;
+            world_y = world_y + disp.y * lift.blend;
+            world_z = world_z + disp.z * lift.blend;
+        }
+    }
+
+    return vec3<f32>(world_x, world_y, world_z);
+}
+
+// =============================================================================
+// Normal computation via tangent cross product
+// =============================================================================
+
+fn compute_normal(x0: f32, y0: f32, det_j: f32) -> vec3<f32> {
+    // Compute full pipeline (ops + lift) at center and two offset points
+    let ops_center = apply_ops_pipeline(x0, y0);
+    let pos_center = apply_lift_pipeline(ops_center.x, ops_center.y, x0, y0, det_j);
+
+    let ops_dx = apply_ops_pipeline(x0 + EPS, y0);
+    let pos_dx = apply_lift_pipeline(ops_dx.x, ops_dx.y, x0 + EPS, y0, det_j);
+
+    let ops_dy = apply_ops_pipeline(x0, y0 + EPS);
+    let pos_dy = apply_lift_pipeline(ops_dy.x, ops_dy.y, x0, y0 + EPS, det_j);
+
+    let tangent_x = pos_dx - pos_center;
+    let tangent_y = pos_dy - pos_center;
+    let normal = cross(tangent_x, tangent_y);
+    let len = length(normal);
+    if len < 1e-8 {
+        return vec3<f32>(0.0, 1.0, 0.0);  // degenerate -> up
+    }
+    return normal / len;
+}
+
 // =============================================================================
 // Main compute entry point
 // =============================================================================
@@ -456,36 +516,45 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Stage 1: Apply operations pipeline
     let transformed = apply_ops_pipeline(x0, y0);
-    let tx = transformed.x;
-    let ty = transformed.y;
+    let ops_x = transformed.x;
+    let ops_y = transformed.y;
 
-    // Stage 2: Compute Jacobian if needed (for lifts or caustic overlay)
+    // Initialize output fields
     var det_j: f32 = 1.0;
-    if uniforms.any_needs_jacobian != 0u || uniforms.compute_caustic != 0u {
-        det_j = numerical_jacobian(x0, y0);
-    }
+    var curl_val: f32 = 0.0;
+    var conformal_val: f32 = 0.0;
+    var norm_x: f32 = 0.0;
+    var norm_y: f32 = 1.0;
+    var norm_z: f32 = 0.0;
 
-    // Stage 3: Apply lift pipeline
-    // Coordinate mapping: lattice x → world x, lattice y → world z, lift dz → world y
-    var world_x = tx;
-    var world_y: f32 = 0.0;
-    var world_z = ty;
-
-    for (var i: u32 = 0u; i < uniforms.num_lifts; i = i + 1u) {
-        let lift = lift_chain[i];
-        if lift.blend <= 0.0 { continue; }
-        let disp = dispatch_lift(lift.type_index, tx, ty, lift.params, x0, y0, det_j);
-        // disp.x = dx (world x), disp.y = dy (world y / height), disp.z = dz (world z)
-        if lift.blend >= 1.0 {
-            world_x = world_x + disp.x;
-            world_y = world_y + disp.y;
-            world_z = world_z + disp.z;
-        } else {
-            world_x = world_x + disp.x * lift.blend;
-            world_y = world_y + disp.y * lift.blend;
-            world_z = world_z + disp.z * lift.blend;
+    // Stage 2: Compute differentials (tiered gating)
+    // Tier 1+: det_j needed for lift Jacobian or caustic or extended differentials
+    if uniforms.compute_differential >= 1u || uniforms.any_needs_jacobian != 0u {
+        let jac = extended_jacobian(x0, y0);
+        det_j = jac.x;
+        if uniforms.compute_differential >= 2u {
+            curl_val = jac.y;
+            conformal_val = jac.z;
         }
     }
 
-    grid_output[idx] = TransformedVertex(world_x, world_y, world_z, det_j);
+    // Tier 3: surface normals (full pipeline re-evaluation at offset points)
+    if uniforms.compute_differential >= 3u {
+        let n = compute_normal(x0, y0, det_j);
+        norm_x = n.x;
+        norm_y = n.y;
+        norm_z = n.z;
+    }
+
+    // Stage 3: Apply lift pipeline
+    let world_pos = apply_lift_pipeline(ops_x, ops_y, x0, y0, det_j);
+
+    grid_output[idx] = TransformedVertex(
+        world_pos.x, world_pos.y, world_pos.z,
+        det_j,
+        curl_val, conformal_val,
+        norm_x, norm_y, norm_z,
+        ops_x, ops_y,
+        0.0  // _pad
+    );
 }

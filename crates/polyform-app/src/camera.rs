@@ -155,6 +155,8 @@ mod tests {
             palette_key: "phosphor".to_string(),
             has_active_layers: false,
             show_caustic: false,
+            color_mode: 0,
+            normal_shading: false,
         }
     }
 

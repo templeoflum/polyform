@@ -9,6 +9,14 @@ struct TransformedVertex {
     vy: f32,
     vz: f32,
     det_j: f32,
+    curl: f32,
+    conformal_defect: f32,
+    nx: f32,
+    ny: f32,
+    nz: f32,
+    tx: f32,
+    ty: f32,
+    _pad: f32,
 }
 
 struct RenderUniforms {
@@ -32,7 +40,8 @@ struct RenderUniforms {
     verts_per_line: u32,
     viewport_width: f32,
     viewport_height: f32,
-    _pad2: vec2<f32>,
+    color_mode: u32,
+    normal_shading_on: u32,
 }
 
 @group(0) @binding(0) var<storage, read> vertices: array<TransformedVertex>;
@@ -43,6 +52,8 @@ const QUAD_VERTS = array<vec2<f32>, 6>(
     vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(-1.0, 1.0),
     vec2(-1.0, 1.0),  vec2(1.0, -1.0), vec2(1.0, 1.0),
 );
+
+const PI: f32 = 3.14159265358979323846;
 
 // Brown-Conrady lens distortion applied in clip space
 fn apply_distortion(clip: vec4<f32>) -> vec4<f32> {
@@ -82,6 +93,13 @@ struct VertexOutput {
     @location(0) perp_dist: f32,       // perpendicular distance in pixels (for Gaussian)
     @location(1) det_j: f32,           // Jacobian determinant (for caustic coloring)
     @location(2) seg_length_px: f32,   // segment length in pixels (for dwell time)
+    @location(3) post_ops_x: f32,      // post-ops x (for domain coloring)
+    @location(4) post_ops_y: f32,      // post-ops y (for domain coloring)
+    @location(5) curl: f32,            // curl value
+    @location(6) conformal_defect: f32, // conformal defect value
+    @location(7) @interpolate(linear) normal_x: f32,   // surface normal x
+    @location(8) @interpolate(linear) normal_y: f32,   // surface normal y
+    @location(9) @interpolate(linear) normal_z: f32,   // surface normal z
 }
 
 @vertex
@@ -146,8 +164,78 @@ fn vs_main(
     out.perp_dist = perp_dist_px;
     out.det_j = mix(v0.det_j, v1.det_j, along);
     out.seg_length_px = seg_length_px;
+    out.post_ops_x = mix(v0.tx, v1.tx, along);
+    out.post_ops_y = mix(v0.ty, v1.ty, along);
+    out.curl = mix(v0.curl, v1.curl, along);
+    out.conformal_defect = mix(v0.conformal_defect, v1.conformal_defect, along);
+    out.normal_x = mix(v0.nx, v1.nx, along);
+    out.normal_y = mix(v0.ny, v1.ny, along);
+    out.normal_z = mix(v0.nz, v1.nz, along);
     return out;
 }
+
+// =============================================================================
+// Color functions
+// =============================================================================
+
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> vec3<f32> {
+    let c = v * s;
+    let hp = h * 6.0;
+    let x = c * (1.0 - abs(hp % 2.0 - 1.0));
+    let m = v - c;
+    var rgb: vec3<f32>;
+    if hp < 1.0 { rgb = vec3(c, x, 0.0); }
+    else if hp < 2.0 { rgb = vec3(x, c, 0.0); }
+    else if hp < 3.0 { rgb = vec3(0.0, c, x); }
+    else if hp < 4.0 { rgb = vec3(0.0, x, c); }
+    else if hp < 5.0 { rgb = vec3(x, 0.0, c); }
+    else { rgb = vec3(c, 0.0, x); }
+    return rgb + vec3(m);
+}
+
+// Domain coloring: phase(z) → hue, |z| → brightness
+fn domain_color(tx_val: f32, ty_val: f32) -> vec3<f32> {
+    let phase = atan2(ty_val, tx_val);           // [-pi, pi]
+    let hue = (phase / (2.0 * PI) + 1.0) % 1.0;  // [0, 1]
+    let modulus = length(vec2(tx_val, ty_val));
+    let brightness = 1.0 - exp(-modulus * 0.5);   // soft compress
+    return hsv_to_rgb(hue, 0.85, brightness);
+}
+
+// Curl colormap: diverging blue → white → red
+fn curl_colormap(curl_val: f32) -> vec3<f32> {
+    let t = clamp(curl_val * 2.0, -1.0, 1.0);  // normalize range
+    if t < 0.0 {
+        return mix(vec3(1.0), vec3(0.2, 0.3, 1.0), -t);  // white → blue
+    } else {
+        return mix(vec3(1.0), vec3(1.0, 0.2, 0.2), t);    // white → red
+    }
+}
+
+// Conformal defect colormap: sequential hot (black → red → yellow → white)
+fn conformal_colormap(defect: f32) -> vec3<f32> {
+    let t = clamp(defect * 1.5, 0.0, 1.0);
+    if t < 0.333 {
+        let s = t / 0.333;
+        return mix(vec3(0.0), vec3(1.0, 0.0, 0.0), s);    // black → red
+    } else if t < 0.666 {
+        let s = (t - 0.333) / 0.333;
+        return mix(vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), s); // red → yellow
+    } else {
+        let s = (t - 0.666) / 0.334;
+        return mix(vec3(1.0, 1.0, 0.0), vec3(1.0), s);    // yellow → white
+    }
+}
+
+// Lambertian shading from fixed light direction
+fn lambertian(normal: vec3<f32>) -> f32 {
+    let light_dir = normalize(vec3(0.5, 1.0, 0.3));
+    return max(dot(normal, light_dir), 0.05);  // 0.05 ambient floor
+}
+
+// =============================================================================
+// Fragment shader
+// =============================================================================
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -164,8 +252,16 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Combined intensity
     let intensity = gaussian * dwell * ru.gain;
 
-    // Base color (with optional caustic coloring)
-    var base_color = ru.line_color.rgb;
+    // Base color selection by mode
+    var base_color: vec3<f32>;
+    switch ru.color_mode {
+        case 1u: { base_color = domain_color(in.post_ops_x, in.post_ops_y); }
+        case 2u: { base_color = curl_colormap(in.curl); }
+        case 3u: { base_color = conformal_colormap(in.conformal_defect); }
+        default: { base_color = ru.line_color.rgb; }
+    }
+
+    // Caustic overlay (independent, applies on top of any color mode)
     if ru.caustic_on != 0u {
         let threshold = ru.caustic_threshold;
         let t = 1.0 - clamp(abs(in.det_j) / threshold, 0.0, 1.0);
@@ -173,7 +269,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         base_color = mix(base_color, caustic_color, t * t);
     }
 
-    let rgb = base_color * intensity;
+    // Normal shading (intensity modulator)
+    var shade = 1.0;
+    if ru.normal_shading_on != 0u {
+        let normal = vec3<f32>(in.normal_x, in.normal_y, in.normal_z);
+        shade = lambertian(normal);
+    }
+
+    let rgb = base_color * intensity * shade;
 
     // Premultiplied alpha trick for blend_mix interpolation:
     // blend_mix=1 → alpha=0 → dst *= 1 → pure additive (phosphor emission)

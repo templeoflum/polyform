@@ -612,6 +612,8 @@ impl AnimationEngine {
             palette_key: preset.palette.clone(),
             has_active_layers,
             show_caustic: false, // set by app from overlay state
+            color_mode: 0,      // set by app from overlay state
+            normal_shading: false, // set by app from overlay state
         }
     }
 

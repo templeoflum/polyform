@@ -69,6 +69,8 @@ pub struct FrameState {
     pub palette_key: String,
     pub has_active_layers: bool,
     pub show_caustic: bool,
+    pub color_mode: u32,       // 0=palette, 1=domain, 2=curl, 3=conformal
+    pub normal_shading: bool,
 }
 
 /// Flattened layer state: type key, blend amount, and all params as resolved f64 values.
