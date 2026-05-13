@@ -268,6 +268,7 @@ pub struct OverlayState {
     pub show_dim_count: bool,
     pub show_active_layers: bool,
     pub show_fps: bool,
+    pub show_caustic: bool,
     pub viewport_width: u32,
     pub viewport_height: u32,
     #[cfg(target_os = "windows")]
@@ -283,6 +284,7 @@ impl Default for OverlayState {
             show_dim_count: true,
             show_active_layers: true,
             show_fps: false,
+            show_caustic: false,
             viewport_width: 1920,
             viewport_height: 1080,
             #[cfg(target_os = "windows")]
@@ -322,6 +324,7 @@ pub fn build_ui(
                     ui.checkbox(&mut overlay.show_dim_count, "Dim");
                     ui.checkbox(&mut overlay.show_active_layers, "Layers");
                     ui.checkbox(&mut overlay.show_fps, "FPS");
+                    ui.checkbox(&mut overlay.show_caustic, "Caustic");
                 });
 
                 viewport_section(ui, overlay, &mut actions);
@@ -387,6 +390,8 @@ pub fn build_ui(
                             camera_position_section(ui, preset, frame_state, &mut actions);
                             ui.separator();
                             camera_lens_section(ui, preset, frame_state, &mut actions);
+                            ui.separator();
+                            camera_distortion_section(ui, preset, frame_state, &mut actions);
                         });
                 });
             }
@@ -1034,10 +1039,27 @@ pub fn frame_state_view_value(fs: &FrameState, view_key: &str) -> Option<f64> {
 // =============================================================================
 
 fn camera_position_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
+    let pos = &preset.camera.position;
+    let all_keys: &[&str] = &[
+        "camera.position.orbitX", "camera.position.orbitY",
+        "camera.position.distance", "camera.position.targetX",
+        "camera.position.targetY", "camera.position.roll",
+    ];
+    let any_on = pos.orbit_x.on || pos.orbit_y.on || pos.distance.on
+        || pos.target_x.on || pos.target_y.on || pos.roll.on;
+
+    ui.horizontal(|ui| {
+        let mut group_on = any_on;
+        if ui.checkbox(&mut group_on, "").changed() {
+            for key in all_keys {
+                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
+            }
+        }
+    });
+
     egui::CollapsingHeader::new("Camera > Position")
         .default_open(false)
         .show(ui, |ui| {
-            let pos = &preset.camera.position;
             toggle_param_widget(ui, "orbit x", &pos.orbit_x, "camera.position.orbitX", frame_state, actions);
             toggle_param_widget(ui, "orbit y", &pos.orbit_y, "camera.position.orbitY", frame_state, actions);
             toggle_param_widget(ui, "distance", &pos.distance, "camera.position.distance", frame_state, actions);
@@ -1048,6 +1070,24 @@ fn camera_position_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Opti
 }
 
 fn camera_lens_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
+    let lens = &preset.camera.lens;
+    let all_keys: &[&str] = &[
+        "camera.lens.focalLength", "camera.lens.sensorSize",
+        "camera.lens.orthoZoom", "camera.lens.anamorphic",
+        "camera.lens.shiftX", "camera.lens.shiftY",
+    ];
+    let any_on = lens.focal_length.on || lens.sensor_size.on || lens.ortho_zoom.on
+        || lens.anamorphic.on || lens.shift_x.on || lens.shift_y.on;
+
+    ui.horizontal(|ui| {
+        let mut group_on = any_on;
+        if ui.checkbox(&mut group_on, "").changed() {
+            for key in all_keys {
+                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
+            }
+        }
+    });
+
     egui::CollapsingHeader::new("Camera > Lens")
         .default_open(false)
         .show(ui, |ui| {
@@ -1065,16 +1105,40 @@ fn camera_lens_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&
                 }
             });
 
-            let lens = &preset.camera.lens;
             toggle_param_widget(ui, "focal length", &lens.focal_length, "camera.lens.focalLength", frame_state, actions);
             toggle_param_widget(ui, "sensor size", &lens.sensor_size, "camera.lens.sensorSize", frame_state, actions);
             toggle_param_widget(ui, "ortho zoom", &lens.ortho_zoom, "camera.lens.orthoZoom", frame_state, actions);
             toggle_param_widget(ui, "anamorphic", &lens.anamorphic, "camera.lens.anamorphic", frame_state, actions);
             toggle_param_widget(ui, "shift x", &lens.shift_x, "camera.lens.shiftX", frame_state, actions);
             toggle_param_widget(ui, "shift y", &lens.shift_y, "camera.lens.shiftY", frame_state, actions);
+        });
+}
 
-            // Distortion
-            let dist = &preset.camera.distortion;
+fn camera_distortion_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
+    let dist = &preset.camera.distortion;
+    let all_keys: &[&str] = &[
+        "camera.distortion.k1", "camera.distortion.k2",
+        "camera.distortion.k3", "camera.distortion.k4",
+        "camera.distortion.p1", "camera.distortion.p2",
+        "camera.distortion.centerX", "camera.distortion.centerY",
+        "camera.distortion.squeeze",
+    ];
+    let any_on = dist.k1.on || dist.k2.on || dist.k3.on || dist.k4.on
+        || dist.p1.on || dist.p2.on || dist.center_x.on || dist.center_y.on || dist.squeeze.on;
+
+    // Header with group toggle visible even when collapsed
+    ui.horizontal(|ui| {
+        let mut group_on = any_on;
+        if ui.checkbox(&mut group_on, "").changed() {
+            for key in all_keys {
+                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
+            }
+        }
+    });
+
+    egui::CollapsingHeader::new("Camera > Distortion")
+        .default_open(false)
+        .show(ui, |ui| {
             toggle_param_widget(ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
             toggle_param_widget(ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
             toggle_param_widget(ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);

@@ -343,8 +343,6 @@ pub struct Display {
     pub show_param_values: bool,
     #[serde(default)]
     pub show_fps: bool,
-    #[serde(default)]
-    pub show_caustic: bool,
 }
 
 fn default_true() -> bool {
@@ -359,7 +357,6 @@ impl Default for Display {
             show_active_layers: true,
             show_param_values: true,
             show_fps: false,
-            show_caustic: false,
         }
     }
 }

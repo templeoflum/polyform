@@ -168,7 +168,6 @@ fn default_values_match_js() {
     assert!(p.display.show_active_layers);
     assert!(p.display.show_param_values);
     assert!(!p.display.show_fps);
-    assert!(!p.display.show_caustic);
 }
 
 // =============================================================================

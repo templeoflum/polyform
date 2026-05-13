@@ -388,8 +388,9 @@ impl ApplicationHandler for App {
 
         self.fps_counter.push(dt);
 
-        let (frame_state, actions) = self.engine.tick(&self.preset, dt, dt);
+        let (mut frame_state, actions) = self.engine.tick(&self.preset, dt, dt);
         self.engine.apply_actions(&mut self.preset, &actions);
+        frame_state.show_caustic = self.overlay.show_caustic;
         self.frame_state = Some(frame_state);
 
         // Render output window directly here — request_redraw() is unreliable
@@ -473,7 +474,7 @@ impl App {
                                 self.overlay.show_active_layers = !self.overlay.show_active_layers;
                             }
                             winit::keyboard::KeyCode::KeyC => {
-                                self.preset.display.show_caustic = !self.preset.display.show_caustic;
+                                self.overlay.show_caustic = !self.overlay.show_caustic;
                             }
                             _ => {}
                         }

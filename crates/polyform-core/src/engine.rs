@@ -569,7 +569,7 @@ impl AnimationEngine {
             lattice_params: preset.sampling.lattice_params.clone(),
             palette_key: preset.palette.clone(),
             has_active_layers,
-            show_caustic: preset.display.show_caustic,
+            show_caustic: false, // set by app from overlay state
         }
     }
 
