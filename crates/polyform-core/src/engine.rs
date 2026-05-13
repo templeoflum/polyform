@@ -163,17 +163,21 @@ impl AnimationEngine {
 
     /// Single entry point called once per frame.
     ///
+    /// - `tempo_value`: current tempo (Hz, from session state)
+    /// - `palette_key`: current palette name (from session state)
     /// - `dt`: animation time delta (0 when paused)
     /// - `wall_dt`: wall-clock time delta (always positive)
     pub fn tick(
         &mut self,
         preset: &Preset,
+        tempo_value: f64,
+        palette_key: &str,
         dt: f64,
         wall_dt: f64,
     ) -> (FrameState, Vec<TransitionAction>) {
         // 1. Advance master phase (unbounded — each param's modular arithmetic
         //    handles its own phase wrapping, so fractional ratios work correctly)
-        self.master_phase += dt * safe_ratio(preset.tempo.value);
+        self.master_phase += dt * safe_ratio(tempo_value);
 
         // 2. Advance wall clock and weights
         self.wall_clock += wall_dt;
@@ -196,6 +200,7 @@ impl AnimationEngine {
         // 6. Build FrameState
         let frame_state = self.build_frame_state(
             preset,
+            palette_key,
             &op_resolved,
             &lift_resolved,
             &camera_resolved,
@@ -353,7 +358,7 @@ impl AnimationEngine {
     pub fn neutral_view_value(view_key: &str) -> f64 {
         match view_key {
             "camera.position.orbitX" => 0.0,
-            "camera.position.orbitY" => 0.1,
+            "camera.position.orbitY" => 0.0,
             "camera.position.distance" => 3.5,
             "camera.position.targetX" => 0.0,
             "camera.position.targetY" => 0.0,
@@ -495,6 +500,7 @@ impl AnimationEngine {
     fn build_frame_state(
         &self,
         preset: &Preset,
+        palette_key: &str,
         op_resolved: &[ResolvedLayer],
         lift_resolved: &[ResolvedLayer],
         camera_resolved: &CameraResolved,
@@ -609,7 +615,7 @@ impl AnimationEngine {
             bloom_radius: self.resolve_view_transition("phosphor.bloomRadius", phosphor_resolved.bloom_radius),
             bloom_threshold: self.resolve_view_transition("phosphor.bloomThreshold", phosphor_resolved.bloom_threshold),
             gamma: self.resolve_view_transition("phosphor.gamma", phosphor_resolved.gamma),
-            palette_key: preset.palette.clone(),
+            palette_key: palette_key.to_string(),
             has_active_layers,
             show_caustic: false, // set by app from overlay state
             color_mode: 0,      // set by app from overlay state
@@ -770,9 +776,6 @@ impl AnimationEngine {
                 if let Some(tp) = Self::resolve_view_param_mut(preset, name) {
                     tp.param.value = value;
                 }
-            }
-            ParamPath::Tempo => {
-                preset.tempo.value = value;
             }
         }
     }
@@ -972,6 +975,9 @@ mod tests {
         );
     }
 
+    const TEST_TEMPO: f64 = 0.3;
+    const TEST_PALETTE: &str = "phosphor";
+
     fn make_test_preset_with_animated_layer() -> Preset {
         let mut preset = Preset::default();
         let mut params = HashMap::new();
@@ -1006,7 +1012,7 @@ mod tests {
 
         // Tick with dt that advances master phase
         // tempo=0.3, dt=0.25 -> master_phase = 0.25*0.3 = 0.075
-        let (frame, _actions) = engine.tick(&preset, 0.25, 0.25);
+        let (frame, _actions) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.25, 0.25);
         let theta = frame.operations[0].params["theta"];
         assert!(theta > 0.0, "theta should have moved from 0: {theta}");
         assert!(theta < 1.0, "theta should be less than max: {theta}");
@@ -1028,12 +1034,12 @@ mod tests {
         );
         assert_eq!(engine.transitions.active_count(), 1);
 
-        let (frame, _actions) = engine.tick(&preset, 0.0, 0.25);
+        let (frame, _actions) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.0, 0.25);
         let blend = frame.operations[0].blend;
         assert!(blend < 1.0, "blend should have decreased: {blend}");
         assert!(blend > 0.0, "blend should not be 0 yet: {blend}");
 
-        let (_frame, actions) = engine.tick(&preset, 0.0, 0.5);
+        let (_frame, actions) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.0, 0.5);
         assert_eq!(actions.len(), 1);
         assert_eq!(
             actions[0],
@@ -1064,10 +1070,10 @@ mod tests {
         assert!(preset.pipeline.operations[0].enabled);
         assert_near(preset.pipeline.operations[0].blend.value, 0.0, 1e-10);
 
-        let (frame, _) = engine.tick(&preset, 0.0, 0.5);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.0, 0.5);
         assert_near(frame.operations[0].blend, 0.5, 1e-10);
 
-        let (frame, _) = engine.tick(&preset, 0.0, 0.5);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.0, 0.5);
         assert_near(frame.operations[0].blend, 1.0, 1e-10);
     }
 
@@ -1082,8 +1088,8 @@ mod tests {
         let mut frame1 = None;
         let mut frame2 = None;
         for _ in 0..120 {
-            frame1 = Some(engine1.tick(&preset1, dt, dt).0);
-            frame2 = Some(engine2.tick(&preset2, dt, dt).0);
+            frame1 = Some(engine1.tick(&preset1, TEST_TEMPO, TEST_PALETTE, dt, dt).0);
+            frame2 = Some(engine2.tick(&preset2, TEST_TEMPO, TEST_PALETTE, dt, dt).0);
         }
 
         let v1 = frame1.unwrap().operations[0].params["theta"];
@@ -1099,7 +1105,7 @@ mod tests {
         preset.quaternion.drift_speed = 1.0;
 
         let mut engine = AnimationEngine::new();
-        let (frame, _) = engine.tick(&preset, 1.0, 1.0);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 1.0, 1.0);
 
         let [ax, ay, az] = frame.quat_axis;
 
@@ -1126,7 +1132,7 @@ mod tests {
         // dt=0.25 -> master_phase = 0.25 * 0.3 = 0.075
         // ax: phase = 0.075*1.0 = 0.075, cosine -> t = 0.5-0.5*cos(0.075*TAU)
         // value = -1.0 + t * 2.0
-        let (frame, _) = engine.tick(&preset, 0.25, 0.25);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.25, 0.25);
         let master_phase = 0.25 * 0.3; // 0.075
         let expected_t = 0.5 - 0.5 * (master_phase * TAU).cos();
         let expected_ax = -1.0 + expected_t * 2.0;
@@ -1138,7 +1144,7 @@ mod tests {
         let preset = make_test_preset_with_animated_layer();
         let mut engine = AnimationEngine::new();
 
-        engine.tick(&preset, 1.0, 1.0);
+        engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 1.0, 1.0);
         assert!(engine.master_phase > 0.0);
 
         engine.reset();
@@ -1159,7 +1165,7 @@ mod tests {
         let initial = preset.camera.position.orbit_x.param.value;
 
         let mut engine = AnimationEngine::new();
-        let (frame, _) = engine.tick(&preset, 0.5, 0.5);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.5, 0.5);
 
         assert!(
             (frame.orbit_x - initial).abs() > 1e-6,
@@ -1175,7 +1181,7 @@ mod tests {
         let initial = preset.pipeline.operations[0].params["theta"].value;
 
         let mut engine = AnimationEngine::new();
-        let (frame, _) = engine.tick(&preset, 0.5, 0.5);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.5, 0.5);
 
         assert_near(frame.operations[0].params["theta"], initial, 1e-15);
         assert_near(frame.operations[0].blend, 0.0, 1e-15);
@@ -1205,7 +1211,7 @@ mod tests {
         let mut engine = AnimationEngine::new();
 
         for _ in 0..10 {
-            engine.tick(&preset, 0.1, 0.1);
+            engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.1, 0.1);
         }
 
         assert_eq!(preset, preset_clone);
@@ -1216,7 +1222,7 @@ mod tests {
         let preset = make_test_preset_with_animated_layer();
         let mut engine = AnimationEngine::new();
 
-        let (frame, _) = engine.tick(&preset, 0.25, 0.25);
+        let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 0.25, 0.25);
 
         // tempo=0.3, dt=0.25 -> master_phase = 0.075
         // theta: ratio=1, offset=0, cosine shape
@@ -1278,11 +1284,11 @@ mod tests {
 
         // Run a few frames to get a stable master_phase
         for _ in 0..60 {
-            engine.tick(&preset, 1.0 / 60.0, 1.0 / 60.0);
+            engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 1.0 / 60.0, 1.0 / 60.0);
         }
 
         // Capture pre-anim orbit_x value
-        let (frame_before, _) = engine.tick(&preset, 1.0 / 60.0, 1.0 / 60.0);
+        let (frame_before, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 1.0 / 60.0, 1.0 / 60.0);
         let before = frame_before.orbit_x;
 
         // Enable anim — simulates what SetParamAnim does
@@ -1292,7 +1298,7 @@ mod tests {
         engine.start_weight_transition(anim_path, 0.0, 1.0, 0.3);
 
         // Next frame: orbit_x should be close to before (weight ≈ 0, still static)
-        let (frame_after, _) = engine.tick(&preset, 1.0 / 60.0, 1.0 / 60.0);
+        let (frame_after, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, 1.0 / 60.0, 1.0 / 60.0);
         let after = frame_after.orbit_x;
         let jump = (after - before).abs();
         // The first frame will advance the weight by ~dt/0.3 ≈ 0.055, so a small
@@ -1326,7 +1332,7 @@ mod tests {
 
         // Run for 5 seconds (300 frames) — should cross master_phase=1.0 multiple times
         for _ in 0..300 {
-            let (frame, _) = engine.tick(&preset, dt, dt);
+            let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE,dt, dt);
             if let Some(prev) = prev_orbit_y {
                 let diff: f64 = frame.orbit_y - prev;
                 let jump = diff.abs();
@@ -1366,7 +1372,7 @@ mod tests {
         preset.quaternion.ay.anim = false;
         preset.quaternion.az.value = 0.0;
         preset.quaternion.az.anim = false;
-        preset.tempo.value = 1.0; // fast tempo to hit wrap point quickly
+        let fast_tempo = 1.0; // fast tempo to hit wrap point quickly
 
         let mut engine = AnimationEngine::new();
         // blend=1.0 (steady state, no transition)
@@ -1377,7 +1383,7 @@ mod tests {
 
         // Run for 3 seconds — should cross the angle wrap point multiple times
         for _ in 0..180 {
-            let (frame, _) = engine.tick(&preset, dt, dt);
+            let (frame, _) = engine.tick(&preset, fast_tempo, TEST_PALETTE, dt, dt);
             if let Some(prev) = prev_quat {
                 // Quaternion angular distance: 2 * acos(|q1 · q2|)
                 let dot = (prev[0] * frame.quat[0]
@@ -1413,13 +1419,12 @@ mod tests {
         preset.quaternion.angle.ratio = 1.0;
         preset.quaternion.mode = QuaternionMode::Fixed;
         preset.quaternion.ay.value = 1.0;
-        preset.tempo.value = 0.3;
 
         let mut engine = AnimationEngine::new();
         // Run for 10 seconds to accumulate many rotations
         let dt = 1.0 / 60.0;
         for _ in 0..600 {
-            engine.tick(&preset, dt, dt);
+            engine.tick(&preset, TEST_TEMPO, TEST_PALETTE, dt, dt);
         }
 
         // Now toggle quat ON with a blend transition
@@ -1432,7 +1437,7 @@ mod tests {
         // Track total angular distance over the 0.3s blend transition
         for _ in 0..18 {
             // 18 frames at 60fps = 0.3s
-            let (frame, _) = engine.tick(&preset, dt, dt);
+            let (frame, _) = engine.tick(&preset, TEST_TEMPO, TEST_PALETTE,dt, dt);
             if let Some(prev) = prev_quat {
                 let dot = (prev[0] * frame.quat[0]
                     + prev[1] * frame.quat[1]

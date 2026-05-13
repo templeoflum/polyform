@@ -1,5 +1,6 @@
 mod camera;
 mod gpu;
+mod preset_library;
 #[cfg(target_os = "windows")]
 mod spout;
 mod ui;
@@ -19,12 +20,17 @@ use polyform_core::transition::{TransitionAction, TransitionTarget};
 use polyform_core::frame_state::FrameState;
 use polyform_core::palette::PALETTE_KEYS;
 use polyform_core::preset::Preset;
-use polyform_core::preset_io::{export_preset_json, make_layer};
+use polyform_core::preset_io::{PresetFile, PresetKind, export_preset_file_json, make_layer};
 use polyform_core::registry::Registry;
-use polyform_core::types::{PhaseModulator, ShapeFunction, ToggleParam};
+use polyform_core::morph::MorphState;
+use polyform_core::types::{Param, PhaseModulator, ShapeFunction, ToggleParam};
 
 use gpu::GpuRenderer;
 use ui::{OverlayState, ParamField, UiAction, frame_state_view_value};
+
+/// Fixed transition time for individual param toggles, layer toggles, etc.
+/// Separate from `blend_time` which is the morph duration between presets.
+const TOGGLE_BLEND_TIME: f64 = 0.3;
 
 // =============================================================================
 // FPS counter
@@ -110,6 +116,16 @@ struct App {
     current_dt: f64,
     frame_state: Option<FrameState>,
 
+    // Ephemeral session state (not saved in presets)
+    tempo: Param,
+    palette: String,
+    blend_time: f64,
+    viewport_width: u32,
+    viewport_height: u32,
+
+    // Morph state
+    morph: Option<MorphState>,
+
     // Mouse orbit state
     orbit_dragging: bool,
     last_cursor_pos: Option<(f64, f64)>,
@@ -136,6 +152,9 @@ struct App {
 
 impl App {
     fn new() -> Self {
+        // Install factory presets on first run
+        preset_library::install_factory_presets();
+
         // Load preset from CLI arg or use default
         let preset = match std::env::args().nth(1) {
             Some(path) => match std::fs::read_to_string(&path) {
@@ -163,6 +182,12 @@ impl App {
             last_frame: Instant::now(),
             current_dt: 1.0 / 60.0,
             frame_state: None,
+            tempo: Param::new(0.5, 0.0, 4166.67, false), // max = 1,000,000 BPM / 240 (bar-rate)
+            palette: "phosphor".to_string(),
+            blend_time: 3.0,
+            viewport_width: 1920,
+            viewport_height: 1080,
+            morph: None,
             orbit_dragging: false,
             last_cursor_pos: None,
             overlay: OverlayState::default(),
@@ -391,7 +416,19 @@ impl ApplicationHandler for App {
 
         self.fps_counter.push(dt);
 
-        let (mut frame_state, actions) = self.engine.tick(&self.preset, dt, dt);
+        // Advance morph if active, using blended preset for rendering
+        if let Some(ref mut morph) = self.morph {
+            let completed = morph.advance(dt);
+            // Update the live preset to the blended state
+            self.preset = morph.blended_preset();
+            if completed {
+                // Morph complete: snap to target
+                self.preset = morph.target.clone();
+                self.morph = None;
+            }
+        }
+
+        let (mut frame_state, actions) = self.engine.tick(&self.preset, self.tempo.value, &self.palette, dt, dt);
         self.engine.apply_actions(&mut self.preset, &actions);
         frame_state.show_caustic = self.overlay.show_caustic;
         frame_state.color_mode = if self.overlay.show_domain_coloring { 1 }
@@ -538,8 +575,8 @@ impl App {
         };
 
         // Render the lattice (borrows self.renderer + self.output)
-        let vp_w = self.preset.viewport.width;
-        let vp_h = self.preset.viewport.height;
+        let vp_w = self.viewport_width;
+        let vp_h = self.viewport_height;
         let render_result = if let (Some(renderer), Some(output)) =
             (&mut self.renderer, &self.output)
         {
@@ -889,6 +926,11 @@ impl App {
                 let ui_actions = std::cell::RefCell::new(Vec::new());
                 let frame_state_ref = self.frame_state.as_ref();
                 let overlay_cell = std::cell::RefCell::new(&mut self.overlay);
+                let tempo_ref = &self.tempo;
+                let palette_ref = self.palette.as_str();
+                let blend_time_ref = self.blend_time;
+                let vp_w = self.viewport_width;
+                let vp_h = self.viewport_height;
                 let full_output = control.egui_ctx.run(raw_input, |ctx| {
                     let actions = ui::build_ui(
                         ctx,
@@ -896,6 +938,11 @@ impl App {
                         &self.registry,
                         frame_state_ref,
                         *overlay_cell.borrow_mut(),
+                        tempo_ref,
+                        palette_ref,
+                        blend_time_ref,
+                        vp_w,
+                        vp_h,
                     );
                     *ui_actions.borrow_mut() = actions;
                 });
@@ -1126,14 +1173,26 @@ impl App {
                     // Only toggle if state actually changes
                     if let Some(layer) = layers.iter().find(|l| l.id == layer_id) {
                         if layer.enabled != enabled {
-                            let blend_time = self.preset.defaults.blend_time;
                             self.engine.toggle_layer(
                                 &mut self.preset,
                                 kind,
                                 &layer_id,
-                                blend_time,
+                                TOGGLE_BLEND_TIME,
                             );
                         }
+                    }
+                }
+                UiAction::SetAllLayersEnabled(kind, enabled) => {
+                    let layers = match kind {
+                        PipelineKind::Operations => &self.preset.pipeline.operations,
+                        PipelineKind::Lift => &self.preset.pipeline.lift,
+                    };
+                    let ids: Vec<String> = layers.iter()
+                        .filter(|l| l.enabled != enabled)
+                        .map(|l| l.id.clone())
+                        .collect();
+                    for layer_id in ids {
+                        self.engine.toggle_layer(&mut self.preset, kind, &layer_id, TOGGLE_BLEND_TIME);
                     }
                 }
                 UiAction::AddLayer(kind, type_key) => {
@@ -1147,7 +1206,6 @@ impl App {
                             }
                             PipelineKind::Lift => self.preset.pipeline.lift.push(layer),
                         }
-                        let blend_time = self.preset.defaults.blend_time;
                         let target = TransitionTarget::LayerBlend {
                             kind,
                             layer_id: layer_id.clone(),
@@ -1156,7 +1214,7 @@ impl App {
                             target,
                             0.0,
                             1.0,
-                            blend_time,
+                            TOGGLE_BLEND_TIME,
                             Some(TransitionAction::RestoreBlendValue {
                                 kind,
                                 layer_id,
@@ -1204,14 +1262,13 @@ impl App {
                 }
                 UiAction::SetPalette(key) => {
                     if PALETTE_KEYS.contains(&key.as_str()) {
-                        self.preset.palette = key;
+                        self.palette = key;
                     }
                 }
                 UiAction::SetProjection(mode) => {
                     self.preset.camera.lens.projection = mode;
                 }
                 UiAction::SetQuatOn(on) => {
-                    let blend_time = self.preset.defaults.blend_time;
                     let path = polyform_core::animation::ParamPath::View(
                         "quaternion.blend".to_string(),
                     );
@@ -1220,10 +1277,10 @@ impl App {
                         self.preset.quaternion.on = true;
                         if self.engine.has_weight(&path) {
                             // Mid-transition: ramp from current value
-                            self.engine.set_weight_target(path, 1.0, blend_time);
+                            self.engine.set_weight_target(path, 1.0, TOGGLE_BLEND_TIME);
                         } else {
                             self.engine.start_weight_transition(
-                                path, 0.0, 1.0, blend_time,
+                                path, 0.0, 1.0, TOGGLE_BLEND_TIME,
                             );
                         }
                     } else if !on && self.preset.quaternion.on {
@@ -1231,10 +1288,10 @@ impl App {
                         // (angle * blend smoothly reaches 0 = identity)
                         self.preset.quaternion.on = false;
                         if self.engine.has_weight(&path) {
-                            self.engine.set_weight_target(path, 0.0, blend_time);
+                            self.engine.set_weight_target(path, 0.0, TOGGLE_BLEND_TIME);
                         } else {
                             self.engine.start_weight_transition(
-                                path, 1.0, 0.0, blend_time,
+                                path, 1.0, 0.0, TOGGLE_BLEND_TIME,
                             );
                         }
                     }
@@ -1244,11 +1301,10 @@ impl App {
                     if let Some(ref fs) = self.frame_state {
                         self.engine.set_prev_mode_quat(Some(fs.quat));
                     }
-                    let blend_time = self.preset.defaults.blend_time;
                     let path = polyform_core::animation::ParamPath::View(
                         "quaternion.mode_blend".to_string(),
                     );
-                    self.engine.start_weight_transition(path, 0.0, 1.0, blend_time);
+                    self.engine.start_weight_transition(path, 0.0, 1.0, TOGGLE_BLEND_TIME);
                     self.preset.quaternion.mode = mode;
                 }
                 UiAction::SetQuatDriftSpeed(speed) => {
@@ -1292,7 +1348,6 @@ impl App {
                     // Toggle on/off uses only the weight system.
                     // resolve_toggle_param blends between neutral (weight=0)
                     // and active value (weight=1), so we just ramp the weight.
-                    let blend_time = self.preset.defaults.blend_time;
                     let path = polyform_core::animation::ParamPath::View(
                         view_key.clone(),
                     );
@@ -1309,12 +1364,12 @@ impl App {
                     let target = if on { 1.0 } else { 0.0 };
                     if self.engine.has_weight(&path) {
                         // Mid-transition: ramp from current weight
-                        self.engine.set_weight_target(path, target, blend_time);
+                        self.engine.set_weight_target(path, target, TOGGLE_BLEND_TIME);
                     } else {
                         // First toggle: start from the opposite end
                         let from = if on { 0.0 } else { 1.0 };
                         self.engine.start_weight_transition(
-                            path, from, target, blend_time,
+                            path, from, target, TOGGLE_BLEND_TIME,
                         );
                     }
                 }
@@ -1322,11 +1377,18 @@ impl App {
                     self.preset.metadata.name = name;
                 }
                 UiAction::SavePreset => {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Polyform Preset", &["json"])
-                        .save_file()
+                    let mut dialog = rfd::FileDialog::new()
+                        .add_filter("Polyform Preset", &["json"]);
+                    if let Some(root) = preset_library::library_root() {
+                        let dir = root.join("full");
+                        if dir.exists() {
+                            dialog = dialog.set_directory(&dir);
+                        }
+                    }
+                    if let Some(path) = dialog.save_file()
                     {
-                        let json = export_preset_json(&self.preset, true);
+                        let file = PresetFile::from_preset(&self.preset, PresetKind::Full);
+                        let json = export_preset_file_json(&file, true);
                         if let Err(e) = std::fs::write(&path, json) {
                             eprintln!("Failed to save preset: {e}");
                         }
@@ -1345,8 +1407,8 @@ impl App {
                     self.spout_include_overlays = include;
                 }
                 UiAction::SetViewportSize(w, h) => {
-                    self.preset.viewport.width = w;
-                    self.preset.viewport.height = h;
+                    self.viewport_width = w;
+                    self.viewport_height = h;
                 }
                 UiAction::SetLatticeType(ty) => {
                     self.preset.sampling.lattice_type = ty;
@@ -1363,21 +1425,47 @@ impl App {
                 UiAction::SetLatticeTauCount(n) => {
                     self.preset.sampling.lattice_params.tau_count = n;
                 }
-                UiAction::LoadPreset => {
+                UiAction::SaveSectionPreset(kind) => {
+                    let file = PresetFile::from_preset(&self.preset, kind);
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Polyform Preset", &["json"])
-                        .pick_file()
+                        .save_file()
                     {
-                        if let Ok(json) = std::fs::read_to_string(&path) {
-                            if let Ok(preset) = serde_json::from_str::<Preset>(&json) {
-                                self.preset = preset;
-                                self.engine.reset();
-                            } else {
-                                eprintln!("Failed to parse preset from {}", path.display());
-                            }
-                        } else {
-                            eprintln!("Failed to read file {}", path.display());
+                        let json = export_preset_file_json(&file, true);
+                        if let Err(e) = std::fs::write(&path, json) {
+                            eprintln!("Failed to save section preset: {e}");
                         }
+                    }
+                }
+                UiAction::LoadSectionPreset(kind, path) => {
+                    match preset_library::load_preset(&path) {
+                        Ok(file) => {
+                            if file.kind() == kind {
+                                // Build a synthetic target: current preset with section replaced
+                                let mut target = self.preset.clone();
+                                file.apply_to_preset(&mut target);
+                                self.morph = Some(MorphState::new(
+                                    self.preset.clone(),
+                                    target,
+                                    self.blend_time,
+                                ));
+                            } else {
+                                eprintln!(
+                                    "Preset kind mismatch: expected {:?}, got {:?}",
+                                    kind,
+                                    file.kind()
+                                );
+                            }
+                        }
+                        Err(e) => eprintln!("Failed to load section preset: {e}"),
+                    }
+                }
+                UiAction::SetBlendTime(t) => {
+                    self.blend_time = t;
+                }
+                UiAction::CancelMorph => {
+                    if let Some(morph) = self.morph.take() {
+                        self.preset = morph.target;
                     }
                 }
             }
@@ -1411,7 +1499,7 @@ impl App {
                 }
             }
             ParamField::Tempo => {
-                self.preset.tempo.value = value;
+                self.tempo.value = value;
             }
             ParamField::View(view_key) => {
                 // Handle quaternion params directly
@@ -1458,7 +1546,7 @@ impl App {
                     .find(|l| l.id == *layer_id)
                     .map(|l| &mut l.blend)
             }
-            ParamField::Tempo => Some(&mut self.preset.tempo),
+            ParamField::Tempo => Some(&mut self.tempo),
             ParamField::View(view_key) => {
                 // Handle quaternion params directly (they're full Params, not ToggleParams)
                 match view_key.as_str() {
@@ -1571,7 +1659,7 @@ fn field_to_param_path(field: &ParamField) -> polyform_core::animation::ParamPat
             kind: *kind,
             layer_id: layer_id.clone(),
         },
-        ParamField::Tempo => ParamPath::Tempo,
+        ParamField::Tempo => ParamPath::View("tempo".to_string()),
         ParamField::View(view_key) => ParamPath::View(view_key.clone()),
     }
 }

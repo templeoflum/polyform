@@ -175,6 +175,13 @@ pub fn op_type_index(key: &str) -> u32 {
         "abs" => 22,
         "mixed" => 23,
         "blend" => 24,
+        "wrap" => 25,
+        "quantize" => 26,
+        "clamp" => 27,
+        "joukowski" => 28,
+        "zTan" => 29,
+        "kaleidoscope" => 30,
+        "noise" => 31,
         _ => 255, // unknown — passthrough
     }
 }
@@ -196,6 +203,9 @@ pub fn lift_type_index(key: &str) -> u32 {
         "helical" => 12,
         "noise3D" => 13,
         "ripple3D" => 14,
+        "zSaddle" => 15,
+        "zTerrace" => 16,
+        "toroidal" => 17,
         _ => 255,
     }
 }
@@ -209,31 +219,39 @@ fn op_param_keys(type_key: &str) -> &'static [&'static str] {
         "shear" => &["kx", "ky"],
         "matrix" => &["a", "b", "c", "d"],
         "zPow" => &["n"],
-        "zInv" | "zExp" | "zLog" | "zSin" | "zCos" | "conjugate" | "abs" | "mixed" => &[],
+        "zInv" | "zExp" | "zLog" | "zSin" | "zCos" | "conjugate" | "abs" | "mixed" | "zTan" => &[],
         "mobius" => &["a", "b", "c", "d"],
         "zPlusC" => &["cx", "cy"],
+        "joukowski" => &["a"],
         "spiral" => &["k"],
         "pinch" => &["p"],
         "swirl" => &["k", "sigma"],
         "radialSine" => &["amp", "freq", "phase"],
+        "kaleidoscope" => &["n", "rotation"],
         "angleWarp" => &["amp", "k"],
         "sineWarp" => &["amp", "freq", "phase"],
         "ripple" => &["amp", "freq", "phase"],
+        "noise" => &["amp", "freq", "seed"],
         "reflect" => &["theta"],
         "blend" => &["amount"],
+        "wrap" => &["width", "height"],
+        "quantize" => &["step_x", "step_y"],
+        "clamp" => &["radius"],
         _ => &[],
     }
 }
 
 fn lift_param_keys(type_key: &str) -> &'static [&'static str] {
     match type_key {
-        "zMagnitude" | "zDisplacement" | "zLogJac" | "zSignedJac" | "zReal" | "zImag" | "zArg" => &["amp"],
+        "zMagnitude" | "zDisplacement" | "zLogJac" | "zSignedJac" | "zReal" | "zImag" | "zArg" | "zSaddle" => &["amp"],
+        "zTerrace" => &["amp", "steps"],
         "zSineWave" => &["amp", "freq", "phase"],
         "zSineXY" => &["amp", "fx", "fy"],
         "zGaussian" => &["amp", "sigma"],
         "spherical" => &["r"],
         "conical" => &["amp"],
         "helical" => &["lift", "twist"],
+        "toroidal" => &["major", "minor"],
         "noise3D" => &["amp", "freq", "seed"],
         "ripple3D" => &["amp", "freq", "phase"],
         _ => &[],

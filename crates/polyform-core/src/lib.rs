@@ -11,7 +11,9 @@ pub mod preset_io;
 pub mod animation;
 pub mod transition;
 pub mod frame_state;
+pub mod morph;
 pub mod engine;
+pub mod factory_presets;
 
 #[cfg(test)]
 mod tests;

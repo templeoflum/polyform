@@ -96,8 +96,46 @@ pub fn z_plus_c(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) ->
     (x + cx, y + cy)
 }
 
+pub fn joukowski(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    let a = p.get("a").copied().unwrap_or(0.5);
+    let r2 = x * x + y * y;
+    // Smooth fade: joukowski effect fades to identity below r=0.3
+    let fade = (r2 / (0.3 * 0.3)).min(1.0);
+    let inv = if r2 > 1e-12 { fade * a / r2 } else { 0.0 };
+    (x + inv * x, y - inv * y)
+}
+
+pub fn z_tan(x: f64, y: f64, _p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    // tan(z) = sin(z)/cos(z) where z = x + iy
+    let sin_re = x.sin() * y.cosh();
+    let sin_im = x.cos() * y.sinh();
+    let cos_re = x.cos() * y.cosh();
+    let cos_im = -x.sin() * y.sinh();
+    // Complex division: sin(z) / cos(z)
+    let den = cos_re * cos_re + cos_im * cos_im;
+    if den < 1e-6 {
+        // Near singularity — clamp
+        let r = (sin_re * sin_re + sin_im * sin_im).sqrt();
+        let max_r = 10.0;
+        if r > max_r {
+            return (sin_re / r * max_r, sin_im / r * max_r);
+        }
+        return (sin_re, sin_im);
+    }
+    let re = (sin_re * cos_re + sin_im * cos_im) / den;
+    let im = (sin_im * cos_re - sin_re * cos_im) / den;
+    // Magnitude clamp
+    let mag = re.hypot(im);
+    let max_r = 10.0;
+    if mag > max_r {
+        (re / mag * max_r, im / mag * max_r)
+    } else {
+        (re, im)
+    }
+}
+
 // =============================================================================
-// Polar / Radial (5)
+// Polar / Radial (6)
 // =============================================================================
 
 pub fn spiral(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
@@ -140,6 +178,27 @@ pub fn radial_sine(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64)
     (nr * t.cos(), nr * t.sin())
 }
 
+pub fn kaleidoscope(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    let n = p.get("n").copied().unwrap_or(6.0);
+    let rotation = p.get("rotation").copied().unwrap_or(0.0);
+    let r = x.hypot(y);
+    if r < 1e-10 {
+        return (x, y);
+    }
+    let sector = std::f64::consts::TAU / n;
+    let mut theta = y.atan2(x) - rotation;
+    // Normalize to [0, TAU)
+    theta = ((theta % std::f64::consts::TAU) + std::f64::consts::TAU) % std::f64::consts::TAU;
+    // Fold into first sector
+    theta = theta % sector;
+    // Mirror within sector
+    if theta > sector / 2.0 {
+        theta = sector - theta;
+    }
+    theta += rotation;
+    (r * theta.cos(), r * theta.sin())
+}
+
 pub fn angle_warp(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
     let amp = p.get("amp").copied().unwrap_or(0.3);
     let k = p.get("k").copied().unwrap_or(3.0);
@@ -173,6 +232,15 @@ pub fn ripple(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (
     ((r + d) * t.cos(), (r + d) * t.sin())
 }
 
+pub fn noise(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    let amp = p.get("amp").copied().unwrap_or(0.1);
+    let freq = p.get("freq").copied().unwrap_or(3.0);
+    let seed = p.get("seed").copied().unwrap_or(0.0);
+    let nx = (freq * x + 1.3 * seed).sin() * (freq * y * 1.7 + 2.1).cos();
+    let ny = (freq * y + 2.7 * seed).sin() * (freq * x * 1.3 + 0.7).cos();
+    (x + amp * nx, y + amp * ny)
+}
+
 // =============================================================================
 // Non-Holomorphic (4)
 // =============================================================================
@@ -197,8 +265,32 @@ pub fn mixed(x: f64, y: f64, _p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (
 }
 
 // =============================================================================
-// Utility (1)
+// Utility (4)
 // =============================================================================
+
+pub fn wrap(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    let w = p.get("width").copied().unwrap_or(2.0);
+    let h = p.get("height").copied().unwrap_or(2.0);
+    let xo = ((x % w) + 1.5 * w) % w - w / 2.0;
+    let yo = ((y % h) + 1.5 * h) % h - h / 2.0;
+    (xo, yo)
+}
+
+pub fn quantize(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    let sx = p.get("step_x").copied().unwrap_or(0.25);
+    let sy = p.get("step_y").copied().unwrap_or(0.25);
+    ((x / sx).round() * sx, (y / sy).round() * sy)
+}
+
+pub fn clamp_op(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64) -> (f64, f64) {
+    let radius = p.get("radius").copied().unwrap_or(2.0);
+    let r = x.hypot(y);
+    if r > radius && r > 1e-10 {
+        (x / r * radius, y / r * radius)
+    } else {
+        (x, y)
+    }
+}
 
 pub fn blend_op(x: f64, y: f64, p: &HashMap<String, f64>, x0: f64, y0: f64) -> (f64, f64) {
     let amount = p.get("amount").copied().unwrap_or(0.5);
@@ -451,5 +543,73 @@ mod tests {
         let (x, y) = blend_op(2.0, 3.0, &params(&[("amount", 0.5)]), 0.0, 0.0);
         assert_near(x, 1.0, 1e-10);
         assert_near(y, 1.5, 1e-10);
+    }
+
+    #[test]
+    fn test_wrap_center() {
+        // Point at origin should stay at origin
+        let (x, y) = wrap(0.0, 0.0, &params(&[("width", 2.0), ("height", 2.0)]), 0.0, 0.0);
+        assert_near(x, 0.0, 1e-10);
+        assert_near(y, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_wrap_periodic() {
+        // Point at (3.0, 0.0) with width=2 should wrap to (1.0, 0.0)
+        let (x, y) = wrap(3.0, 0.0, &params(&[("width", 2.0), ("height", 2.0)]), 0.0, 0.0);
+        assert_near(x, -1.0, 1e-10);
+        assert_near(y, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_quantize() {
+        let (x, y) = quantize(0.3, 0.7, &params(&[("step_x", 0.25), ("step_y", 0.5)]), 0.0, 0.0);
+        assert_near(x, 0.25, 1e-10);
+        assert_near(y, 0.5, 1e-10);
+    }
+
+    #[test]
+    fn test_clamp_inside() {
+        let (x, y) = clamp_op(1.0, 0.0, &params(&[("radius", 2.0)]), 0.0, 0.0);
+        assert_near(x, 1.0, 1e-10);
+        assert_near(y, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_clamp_outside() {
+        let (x, y) = clamp_op(3.0, 4.0, &params(&[("radius", 2.0)]), 0.0, 0.0);
+        let r = x.hypot(y);
+        assert_near(r, 2.0, 1e-10);
+    }
+
+    #[test]
+    fn test_joukowski_real_axis() {
+        // z + a*x/|z|^2 for z=2+0i, a=0.5 => 2 + 0.5*2/4 = 2.25
+        let (x, y) = joukowski(2.0, 0.0, &params(&[("a", 0.5)]), 0.0, 0.0);
+        assert_near(x, 2.25, 1e-10);
+        assert_near(y, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_z_tan_origin() {
+        // tan(0) = 0
+        let (x, y) = z_tan(0.0, 0.0, &empty(), 0.0, 0.0);
+        assert_near(x, 0.0, 1e-10);
+        assert_near(y, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_kaleidoscope_symmetry() {
+        // Point on x-axis should be unchanged (it's in the first sector already)
+        let (x, y) = kaleidoscope(1.0, 0.0, &params(&[("n", 6.0), ("rotation", 0.0)]), 0.0, 0.0);
+        assert_near(x, 1.0, 1e-10);
+        assert_near(y, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_noise_zero_amp() {
+        let (x, y) = noise(1.0, 2.0, &params(&[("amp", 0.0), ("freq", 3.0), ("seed", 0.0)]), 0.0, 0.0);
+        assert_near(x, 1.0, 1e-10);
+        assert_near(y, 2.0, 1e-10);
     }
 }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::preset::{Preset, SCHEMA_NAME, SCHEMA_VERSION};
+use crate::preset::Preset;
 use crate::preset_io;
 use crate::registry::Registry;
 
@@ -25,19 +25,13 @@ fn schema_compliance() {
     let value: serde_json::Value = serde_json::to_value(&preset).unwrap();
     let obj = value.as_object().unwrap();
 
-    // Top-level keys
+    // Top-level keys (instrument patch only — no ephemeral session state)
     let expected_keys = [
-        "schema", "version", "metadata", "tempo", "defaults",
-        "palette", "pipeline", "camera", "quaternion", "sampling", "display",
-        "phosphor",
+        "metadata", "pipeline", "camera", "quaternion", "sampling", "phosphor",
     ];
     for key in &expected_keys {
         assert!(obj.contains_key(*key), "missing top-level key: {key}");
     }
-
-    // Schema and version
-    assert_eq!(obj["schema"].as_str().unwrap(), SCHEMA_NAME);
-    assert_eq!(obj["version"].as_u64().unwrap(), SCHEMA_VERSION as u64);
 
     // Pipeline structure
     let pipeline = obj["pipeline"].as_object().unwrap();
@@ -78,34 +72,18 @@ fn check_no_snake_case(value: &serde_json::Value, path: &str) {
 }
 
 // =============================================================================
-// Default values match JS
+// Default values match expected
 // =============================================================================
 
 #[test]
-fn default_values_match_js() {
+fn default_values() {
     let p = Preset::default();
-
-    // Schema
-    assert_eq!(p.schema, "polyform.preset");
-    assert_eq!(p.version, 1);
 
     // Metadata
     assert_eq!(p.metadata.name, "Untitled");
     assert_eq!(p.metadata.description, "");
     assert_eq!(p.metadata.author, "");
     assert!(p.metadata.tags.is_empty());
-
-    // Tempo
-    assert_eq!(p.tempo.value, 0.3);
-    assert_eq!(p.tempo.min, 0.0);
-    assert!((p.tempo.max - 16666.67).abs() < 0.01);
-    assert!(!p.tempo.anim);
-
-    // Defaults
-    assert_eq!(p.defaults.blend_time, 1.0);
-
-    // Palette
-    assert_eq!(p.palette, "phosphor");
 
     // Pipeline
     assert!(p.pipeline.operations.is_empty());
@@ -184,29 +162,24 @@ fn default_values_match_js() {
     assert_eq!(p.phosphor.bloom_threshold.param.value, 0.3);
     assert!(p.phosphor.gamma.on);
     assert_eq!(p.phosphor.gamma.param.value, 1.0);
-
-    // Display
-    assert!(p.display.show_formula);
-    assert!(p.display.show_dim_count);
-    assert!(p.display.show_active_layers);
-    assert!(p.display.show_param_values);
-    assert!(!p.display.show_fps);
 }
 
 // =============================================================================
 // Cross-format test: deserialize a JS-exported preset
+// (JS fixture has old fields like schema/version/palette — they should be
+// silently ignored via serde(deny_unknown_fields) NOT being set)
 // =============================================================================
 
 #[test]
 fn deserialize_js_fixture() {
     let json = include_str!("../tests/fixtures/js-export.json");
-    let preset: Preset = serde_json::from_str(json).unwrap();
+    // Use the tolerant import path since the fixture has old fields
+    let registry = Registry::new();
+    let result = preset_io::import_preset_json(json, &registry).unwrap();
+    let preset = result.preset;
 
-    // Verify basic fields
-    assert_eq!(preset.schema, "polyform.preset");
-    assert_eq!(preset.version, 1);
+    // Verify metadata
     assert_eq!(preset.metadata.name, "Test Fixture");
-    assert_eq!(preset.palette, "acid");
 
     // Verify pipeline layers
     assert_eq!(preset.pipeline.operations.len(), 2);
@@ -257,7 +230,6 @@ fn unknown_fields_ignored() {
 
     let preset: Preset = serde_json::from_str(json).unwrap();
     assert_eq!(preset.metadata.name, "Test");
-    assert_eq!(preset.tempo.value, 0.5);
 }
 
 // =============================================================================

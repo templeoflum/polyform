@@ -1,5 +1,5 @@
 // Polyform GPU compute shader — operations + lift pipeline
-// All 25 operations and 15 lifts dispatched via switch statements.
+// All 32 operations and 18 lifts dispatched via switch statements.
 
 struct GridVertex {
     x0: f32,
@@ -221,7 +221,95 @@ fn op_abs(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
 }
 
 fn op_mixed(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
-    return vec2<f32>(x * x - y * y, 2.0 * x * y);
+    return vec2<f32>(x * x * y * y * y, -(x * x * x * y * y));
+}
+
+fn op_wrap(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let w = p.x;
+    let h = p.y;
+    let xo = ((x % w) + 1.5 * w) % w - w / 2.0;
+    let yo = ((y % h) + 1.5 * h) % h - h / 2.0;
+    return vec2<f32>(xo, yo);
+}
+
+fn op_quantize(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let sx = p.x;
+    let sy = p.y;
+    return vec2<f32>(round(x / sx) * sx, round(y / sy) * sy);
+}
+
+fn op_clamp(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let radius = p.x;
+    let r = sqrt(x * x + y * y);
+    if r > radius && r > 1e-10 {
+        let scale_f = radius / r;
+        return vec2<f32>(x * scale_f, y * scale_f);
+    }
+    return vec2<f32>(x, y);
+}
+
+fn op_joukowski(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let a = p.x;
+    let r2 = x * x + y * y;
+    // Smooth fade: joukowski effect fades to identity below r=0.3
+    let fade = min(r2 / (0.3 * 0.3), 1.0);
+    var inv = 0.0;
+    if r2 > 1e-12 {
+        inv = fade * a / r2;
+    }
+    return vec2<f32>(x + inv * x, y - inv * y);
+}
+
+fn op_z_tan(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let sin_re = sin(x) * cosh(y);
+    let sin_im = cos(x) * sinh(y);
+    let cos_re = cos(x) * cosh(y);
+    let cos_im = -sin(x) * sinh(y);
+    let den = cos_re * cos_re + cos_im * cos_im;
+    if den < 1e-6 {
+        let r = sqrt(sin_re * sin_re + sin_im * sin_im);
+        let max_r = 10.0;
+        if r > max_r {
+            return vec2<f32>(sin_re / r * max_r, sin_im / r * max_r);
+        }
+        return vec2<f32>(sin_re, sin_im);
+    }
+    let re = (sin_re * cos_re + sin_im * cos_im) / den;
+    let im = (sin_im * cos_re - sin_re * cos_im) / den;
+    let mag = sqrt(re * re + im * im);
+    let max_r = 10.0;
+    if mag > max_r {
+        return vec2<f32>(re / mag * max_r, im / mag * max_r);
+    }
+    return vec2<f32>(re, im);
+}
+
+fn op_kaleidoscope(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let n = p.x;
+    let rotation = p.y;
+    let r = sqrt(x * x + y * y);
+    if r < 1e-10 { return vec2<f32>(x, y); }
+    let sector = TAU / n;
+    var theta = atan2(y, x) - rotation;
+    // Normalize to [0, TAU)
+    theta = ((theta % TAU) + TAU) % TAU;
+    // Fold into first sector
+    theta = theta % sector;
+    // Mirror within sector
+    if theta > sector / 2.0 {
+        theta = sector - theta;
+    }
+    theta = theta + rotation;
+    return vec2<f32>(r * cos(theta), r * sin(theta));
+}
+
+fn op_noise(x: f32, y: f32, p: vec4<f32>) -> vec2<f32> {
+    let amp = p.x;
+    let freq = p.y;
+    let seed = p.z;
+    let nx = sin(freq * x + 1.3 * seed) * cos(freq * y * 1.7 + 2.1);
+    let ny = sin(freq * y + 2.7 * seed) * cos(freq * x * 1.3 + 0.7);
+    return vec2<f32>(x + amp * nx, y + amp * ny);
 }
 
 fn op_blend_op(x: f32, y: f32, p: vec4<f32>, x0: f32, y0: f32) -> vec2<f32> {
@@ -260,6 +348,13 @@ fn dispatch_op(type_idx: u32, x: f32, y: f32, p: vec4<f32>, x0: f32, y0: f32) ->
         case 22u: { return op_abs(x, y, p); }
         case 23u: { return op_mixed(x, y, p); }
         case 24u: { return op_blend_op(x, y, p, x0, y0); }
+        case 25u: { return op_wrap(x, y, p); }
+        case 26u: { return op_quantize(x, y, p); }
+        case 27u: { return op_clamp(x, y, p); }
+        case 28u: { return op_joukowski(x, y, p); }
+        case 29u: { return op_z_tan(x, y, p); }
+        case 30u: { return op_kaleidoscope(x, y, p); }
+        case 31u: { return op_noise(x, y, p); }
         default: { return vec2<f32>(x, y); }
     }
 }
@@ -430,6 +525,29 @@ fn lift_ripple_3d(tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32, det_j: f32) 
     return vec3<f32>(wave * nx * 0.3, wave, wave * ny_val * 0.3);
 }
 
+fn lift_z_saddle(tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32, det_j: f32) -> vec3<f32> {
+    let amp = p.x;
+    return vec3<f32>(0.0, amp * tx * ty, 0.0);
+}
+
+fn lift_z_terrace(tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32, det_j: f32) -> vec3<f32> {
+    let amp = p.x;
+    let steps = p.y;
+    let r = sqrt(tx * tx + ty * ty);
+    return vec3<f32>(0.0, amp * floor(r * steps) / steps, 0.0);
+}
+
+fn lift_toroidal(tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32, det_j: f32) -> vec3<f32> {
+    let major = p.x;
+    let minor = p.y;
+    let u = tx;
+    let v = ty;
+    let lx = (major + minor * cos(v)) * cos(u);
+    let lz = (major + minor * cos(v)) * sin(u);
+    let ly = minor * sin(v);
+    return vec3<f32>(lx - tx, ly, lz - ty);
+}
+
 // Dispatch a single lift by type_index
 fn dispatch_lift(type_idx: u32, tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32, det_j: f32) -> vec3<f32> {
     switch type_idx {
@@ -448,6 +566,9 @@ fn dispatch_lift(type_idx: u32, tx: f32, ty: f32, p: vec4<f32>, x0: f32, y0: f32
         case 12u: { return lift_helical(tx, ty, p, x0, y0, det_j); }
         case 13u: { return lift_noise_3d(tx, ty, p, x0, y0, det_j); }
         case 14u: { return lift_ripple_3d(tx, ty, p, x0, y0, det_j); }
+        case 15u: { return lift_z_saddle(tx, ty, p, x0, y0, det_j); }
+        case 16u: { return lift_z_terrace(tx, ty, p, x0, y0, det_j); }
+        case 17u: { return lift_toroidal(tx, ty, p, x0, y0, det_j); }
         default: { return vec3<f32>(0.0, 0.0, 0.0); }
     }
 }

@@ -14,7 +14,6 @@ pub enum TransitionTarget {
         layer_id: String,
     },
     ViewParam(String),
-    Tempo,
 }
 
 /// Action to take when a transition completes.

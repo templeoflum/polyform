@@ -120,7 +120,7 @@ impl Default for Registry {
 }
 
 // =============================================================================
-// Operations (25 types)
+// Operations (32 types)
 // =============================================================================
 
 fn build_operations() -> HashMap<&'static str, OperationDef> {
@@ -276,6 +276,29 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         needs_origin: false,
         apply: ops::z_plus_c,
     });
+    m.insert("joukowski", OperationDef {
+        key: "joukowski",
+        label: "joukowski z+a/z",
+        category: "complex",
+        params: vec![
+            ParamDef { key: "a", default: 0.5, min: 0.0, max: 3.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_origin: false,
+        apply: ops::joukowski,
+    });
+    m.insert("zTan", OperationDef {
+        key: "zTan",
+        label: "tan(z)",
+        category: "complex",
+        params: vec![
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_origin: false,
+        apply: ops::z_tan,
+    });
 
     // ----- polar / radial -----
     m.insert("spiral", OperationDef {
@@ -329,6 +352,19 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         needs_origin: false,
         apply: ops::radial_sine,
     });
+    m.insert("kaleidoscope", OperationDef {
+        key: "kaleidoscope",
+        label: "kaleidoscope",
+        category: "polar",
+        params: vec![
+            ParamDef { key: "n", default: 6.0, min: 2.0, max: 16.0, periodic: false },
+            ParamDef { key: "rotation", default: 0.0, min: 0.0, max: PI * 2.0, periodic: true },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_origin: false,
+        apply: ops::kaleidoscope,
+    });
     m.insert("angleWarp", OperationDef {
         key: "angleWarp",
         label: "angle warp",
@@ -369,6 +405,19 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         ],
         needs_origin: false,
         apply: ops::ripple,
+    });
+
+    m.insert("noise", OperationDef {
+        key: "noise",
+        label: "noise",
+        category: "wave",
+        params: vec![
+            ParamDef { key: "amp", default: 0.1, min: 0.0, max: 0.5, periodic: false },
+            ParamDef { key: "freq", default: 3.0, min: 0.5, max: 15.0, periodic: false },
+            ParamDef { key: "seed", default: 0.0, min: 0.0, max: PI * 2.0, periodic: true },
+        ],
+        needs_origin: false,
+        apply: ops::noise,
     });
 
     // ----- non-holomorphic -----
@@ -418,12 +467,50 @@ fn build_operations() -> HashMap<&'static str, OperationDef> {
         needs_origin: true,
         apply: ops::blend_op,
     });
+    m.insert("wrap", OperationDef {
+        key: "wrap",
+        label: "wrap (tile)",
+        category: "utility",
+        params: vec![
+            ParamDef { key: "width", default: 2.0, min: 0.1, max: 8.0, periodic: false },
+            ParamDef { key: "height", default: 2.0, min: 0.1, max: 8.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_origin: false,
+        apply: ops::wrap,
+    });
+    m.insert("quantize", OperationDef {
+        key: "quantize",
+        label: "quantize (snap)",
+        category: "utility",
+        params: vec![
+            ParamDef { key: "step_x", default: 0.25, min: 0.01, max: 2.0, periodic: false },
+            ParamDef { key: "step_y", default: 0.25, min: 0.01, max: 2.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_origin: false,
+        apply: ops::quantize,
+    });
+    m.insert("clamp", OperationDef {
+        key: "clamp",
+        label: "clamp (radial)",
+        category: "utility",
+        params: vec![
+            ParamDef { key: "radius", default: 2.0, min: 0.1, max: 10.0, periodic: false },
+            ParamDef { key: "cx", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "cy", default: 0.0, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_origin: false,
+        apply: ops::clamp_op,
+    });
 
     m
 }
 
 // =============================================================================
-// Lift / displacement types (15 types)
+// Lift / displacement types (18 types)
 // =============================================================================
 
 fn build_lift() -> HashMap<&'static str, LiftDef> {
@@ -499,6 +586,28 @@ fn build_lift() -> HashMap<&'static str, LiftDef> {
         ],
         needs_jacobian: false,
         apply: lift::z_arg,
+    });
+
+    m.insert("zSaddle", LiftDef {
+        key: "zSaddle",
+        label: "saddle (xy -> z)",
+        category: "height",
+        params: vec![
+            ParamDef { key: "amp", default: 0.5, min: -2.0, max: 2.0, periodic: false },
+        ],
+        needs_jacobian: false,
+        apply: lift::z_saddle,
+    });
+    m.insert("zTerrace", LiftDef {
+        key: "zTerrace",
+        label: "terrace (staircase)",
+        category: "height",
+        params: vec![
+            ParamDef { key: "amp", default: 0.5, min: -2.0, max: 2.0, periodic: false },
+            ParamDef { key: "steps", default: 5.0, min: 1.0, max: 20.0, periodic: false },
+        ],
+        needs_jacobian: false,
+        apply: lift::z_terrace,
     });
 
     // ----- waves / bumps (z) -----
@@ -582,6 +691,17 @@ fn build_lift() -> HashMap<&'static str, LiftDef> {
         needs_jacobian: false,
         apply: lift::noise_3d,
     });
+    m.insert("toroidal", LiftDef {
+        key: "toroidal",
+        label: "toroidal wrap",
+        category: "3d",
+        params: vec![
+            ParamDef { key: "major", default: 1.5, min: 0.5, max: 4.0, periodic: false },
+            ParamDef { key: "minor", default: 0.5, min: 0.1, max: 2.0, periodic: false },
+        ],
+        needs_jacobian: false,
+        apply: lift::toroidal,
+    });
     m.insert("ripple3D", LiftDef {
         key: "ripple3D",
         label: "ripple (z + xy)",
@@ -605,13 +725,13 @@ mod tests {
     #[test]
     fn registry_operation_count() {
         let reg = Registry::new();
-        assert_eq!(reg.operations.len(), 25);
+        assert_eq!(reg.operations.len(), 32);
     }
 
     #[test]
     fn registry_lift_count() {
         let reg = Registry::new();
-        assert_eq!(reg.lift.len(), 15);
+        assert_eq!(reg.lift.len(), 18);
     }
 
     #[test]
@@ -619,10 +739,11 @@ mod tests {
         let expected = vec![
             "translate", "scale", "rotate", "shear", "matrix",
             "zPow", "zInv", "zExp", "zLog", "zSin", "zCos", "mobius", "zPlusC",
-            "spiral", "pinch", "swirl", "radialSine", "angleWarp",
-            "sineWarp", "ripple",
+            "joukowski", "zTan",
+            "spiral", "pinch", "swirl", "radialSine", "kaleidoscope", "angleWarp",
+            "sineWarp", "ripple", "noise",
             "conjugate", "reflect", "abs", "mixed",
-            "blend",
+            "blend", "wrap", "quantize", "clamp",
         ];
         let reg = Registry::new();
         for key in &expected {
@@ -635,8 +756,9 @@ mod tests {
         let expected = vec![
             "zMagnitude", "zDisplacement", "zLogJac", "zSignedJac",
             "zReal", "zImag", "zArg",
+            "zSaddle", "zTerrace",
             "zSineWave", "zSineXY", "zGaussian",
-            "spherical", "conical", "helical", "noise3D", "ripple3D",
+            "spherical", "conical", "helical", "toroidal", "noise3D", "ripple3D",
         ];
         let reg = Registry::new();
         for key in &expected {

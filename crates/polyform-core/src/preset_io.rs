@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::layer::Layer;
-use crate::preset::Preset;
+use crate::preset::{Camera, Phosphor, Preset, Quaternion, Sampling};
 use crate::registry::Registry;
 use crate::types::{default_blend, Param, PhaseModulator, ShapeFunction};
 
@@ -33,6 +35,122 @@ impl std::fmt::Display for ImportError {
 }
 
 impl std::error::Error for ImportError {}
+
+// =============================================================================
+// PresetFile — tagged union for full + section presets
+// =============================================================================
+
+/// Discriminator for preset file kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresetKind {
+    Full,
+    Operations,
+    Lift,
+    Camera,
+    Phosphor,
+    Sampling,
+}
+
+impl PresetKind {
+    /// Subdirectory name in the preset library.
+    pub fn dir_name(&self) -> &'static str {
+        match self {
+            PresetKind::Full => "full",
+            PresetKind::Operations => "operations",
+            PresetKind::Lift => "lift",
+            PresetKind::Camera => "camera",
+            PresetKind::Phosphor => "phosphor",
+            PresetKind::Sampling => "sampling",
+        }
+    }
+}
+
+/// A preset file that self-describes what it contains via the `kind` tag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PresetFile {
+    #[serde(rename = "full")]
+    Full(Preset),
+    #[serde(rename = "operations")]
+    Operations { layers: Vec<Layer> },
+    #[serde(rename = "lift")]
+    Lift { layers: Vec<Layer> },
+    #[serde(rename = "camera")]
+    Camera {
+        camera: Camera,
+        quaternion: Quaternion,
+    },
+    #[serde(rename = "phosphor")]
+    Phosphor { phosphor: Phosphor },
+    #[serde(rename = "sampling")]
+    Sampling { sampling: Sampling },
+}
+
+impl PresetFile {
+    pub fn kind(&self) -> PresetKind {
+        match self {
+            PresetFile::Full(_) => PresetKind::Full,
+            PresetFile::Operations { .. } => PresetKind::Operations,
+            PresetFile::Lift { .. } => PresetKind::Lift,
+            PresetFile::Camera { .. } => PresetKind::Camera,
+            PresetFile::Phosphor { .. } => PresetKind::Phosphor,
+            PresetFile::Sampling { .. } => PresetKind::Sampling,
+        }
+    }
+
+    /// Extract from a live preset.
+    pub fn from_preset(preset: &Preset, kind: PresetKind) -> Self {
+        match kind {
+            PresetKind::Full => PresetFile::Full(preset.clone()),
+            PresetKind::Operations => PresetFile::Operations {
+                layers: preset.pipeline.operations.clone(),
+            },
+            PresetKind::Lift => PresetFile::Lift {
+                layers: preset.pipeline.lift.clone(),
+            },
+            PresetKind::Camera => PresetFile::Camera {
+                camera: preset.camera.clone(),
+                quaternion: preset.quaternion.clone(),
+            },
+            PresetKind::Phosphor => PresetFile::Phosphor {
+                phosphor: preset.phosphor.clone(),
+            },
+            PresetKind::Sampling => PresetFile::Sampling {
+                sampling: preset.sampling.clone(),
+            },
+        }
+    }
+
+    /// Apply section data into a live preset.
+    pub fn apply_to_preset(self, preset: &mut Preset) {
+        match self {
+            PresetFile::Full(p) => *preset = p,
+            PresetFile::Operations { layers } => preset.pipeline.operations = layers,
+            PresetFile::Lift { layers } => preset.pipeline.lift = layers,
+            PresetFile::Camera { camera, quaternion } => {
+                preset.camera = camera;
+                preset.quaternion = quaternion;
+            }
+            PresetFile::Phosphor { phosphor } => preset.phosphor = phosphor,
+            PresetFile::Sampling { sampling } => preset.sampling = sampling,
+        }
+    }
+}
+
+/// Serialize a PresetFile to JSON.
+pub fn export_preset_file_json(file: &PresetFile, pretty: bool) -> String {
+    if pretty {
+        serde_json::to_string_pretty(file).unwrap()
+    } else {
+        serde_json::to_string(file).unwrap()
+    }
+}
+
+/// Deserialize a PresetFile from JSON.
+pub fn import_preset_file_json(json: &str) -> Result<PresetFile, ImportError> {
+    serde_json::from_str(json).map_err(|e| ImportError::InvalidJson(e.to_string()))
+}
 
 // =============================================================================
 // reconcile_preset — drop unknown types, fill missing params, drop orphaned params
@@ -253,16 +371,6 @@ fn validate_preset_value(value: &serde_json::Value) -> (Preset, Vec<String>) {
         }
     };
 
-    // schema
-    if let Some(v) = obj.get("schema") {
-        preset.schema = as_string(v, "polyform.preset");
-    }
-
-    // version
-    if let Some(v) = obj.get("version") {
-        preset.version = as_u32(v, 1, &mut warnings, "version");
-    }
-
     // metadata
     if let Some(v) = obj.get("metadata") {
         if let Some(m) = v.as_object() {
@@ -294,24 +402,8 @@ fn validate_preset_value(value: &serde_json::Value) -> (Preset, Vec<String>) {
         }
     }
 
-    // tempo
-    if let Some(v) = obj.get("tempo") {
-        preset.tempo = read_param(v, &preset.tempo, &mut warnings, "tempo");
-    }
-
-    // defaults
-    if let Some(v) = obj.get("defaults") {
-        if let Some(d) = v.as_object() {
-            if let Some(v) = d.get("blendTime") {
-                preset.defaults.blend_time = as_f64(v, 1.0, &mut warnings, "defaults.blendTime");
-            }
-        }
-    }
-
-    // palette
-    if let Some(v) = obj.get("palette") {
-        preset.palette = as_string(v, "phosphor");
-    }
+    // Note: schema, version, tempo, defaults, palette, display, viewport are
+    // ephemeral session state — silently ignored on import.
 
     // pipeline
     if let Some(v) = obj.get("pipeline") {
@@ -371,16 +463,6 @@ fn validate_preset_value(value: &serde_json::Value) -> (Preset, Vec<String>) {
         }
     }
 
-    // display
-    if let Some(v) = obj.get("display") {
-        match serde_json::from_value(v.clone()) {
-            Ok(d) => preset.display = d,
-            Err(_) => {
-                warnings.push("display has invalid structure, using defaults.".to_string());
-            }
-        }
-    }
-
     (preset, warnings)
 }
 
@@ -397,19 +479,6 @@ fn as_f64(v: &serde_json::Value, fallback: f64, warnings: &mut Vec<String>, path
                 return n as f64;
             }
             warnings.push(format!("{path}: expected number, using default {fallback}."));
-            fallback
-        }
-    }
-}
-
-fn as_u32(v: &serde_json::Value, fallback: u32, warnings: &mut Vec<String>, path: &str) -> u32 {
-    match v.as_u64() {
-        Some(n) => n as u32,
-        None => {
-            if let Some(n) = v.as_f64() {
-                return n as u32;
-            }
-            warnings.push(format!("{path}: expected integer, using default {fallback}."));
             fallback
         }
     }
@@ -707,9 +776,7 @@ mod tests {
     fn empty_json_object_produces_valid_default_preset() {
         let registry = Registry::new();
         let result = import_preset_json("{}", &registry).unwrap();
-        assert_eq!(result.preset.schema, "polyform.preset");
-        assert_eq!(result.preset.version, 1);
-        assert_eq!(result.preset.palette, "phosphor");
+        assert_eq!(result.preset.metadata.name, "Untitled");
         assert!(result.preset.pipeline.operations.is_empty());
         assert!(result.preset.pipeline.lift.is_empty());
         assert!(result.warnings.is_empty());
@@ -787,20 +854,21 @@ mod tests {
     }
 
     #[test]
-    fn tolerant_validation_type_mismatch_on_scalar() {
+    fn tolerant_validation_ignores_unknown_top_level_fields() {
         let registry = Registry::new();
-        // tempo.value is a string instead of a number — should fall back to default with warning
+        // Unknown fields like tempo, palette, schema, version should be silently ignored
         let json = r#"{
-            "tempo": { "value": "not a number", "min": 0, "max": 2, "anim": false, "shape": "cosine", "ratio": 1 }
+            "tempo": { "value": 0.5, "min": 0, "max": 2, "anim": false, "shape": "cosine", "ratio": 1 },
+            "palette": "acid",
+            "schema": "polyform.preset",
+            "version": 1,
+            "metadata": { "name": "Test" }
         }"#;
 
         let result = import_preset_json(json, &registry).unwrap();
-        // Strict serde will fail, tolerant path fires
-        // tempo.value should get the default (0.3 from Preset::default tempo)
-        // Note: tolerant path uses Preset::default() then overrides, so tempo defaults are from Preset::default
-        assert!(result.warnings.iter().any(|w| w.contains("expected number")));
-        // The value should be the default since "not a number" can't parse
-        assert_eq!(result.preset.tempo.value, 0.3);
+        assert_eq!(result.preset.metadata.name, "Test");
+        // No warnings — old fields are silently ignored
+        assert!(result.warnings.is_empty());
     }
 
     #[test]
@@ -833,5 +901,67 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w == "lift \"zMagnitude\" has unknown param \"oldParam\" - dropped."));
+    }
+
+    #[test]
+    fn preset_file_full_roundtrip() {
+        let preset = Preset::default();
+        let file = PresetFile::from_preset(&preset, PresetKind::Full);
+        let json = export_preset_file_json(&file, true);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Full);
+        if let PresetFile::Full(p) = parsed {
+            assert_eq!(p.metadata.name, "Untitled");
+        } else {
+            panic!("Expected Full variant");
+        }
+    }
+
+    #[test]
+    fn preset_file_section_roundtrip() {
+        let registry = Registry::new();
+        let mut preset = Preset::default();
+        preset.pipeline.operations.push(make_layer("rotate", &registry).unwrap());
+
+        // Operations section
+        let file = PresetFile::from_preset(&preset, PresetKind::Operations);
+        let json = export_preset_file_json(&file, false);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Operations);
+        if let PresetFile::Operations { layers } = parsed {
+            assert_eq!(layers.len(), 1);
+            assert_eq!(layers[0].type_key, "rotate");
+        } else {
+            panic!("Expected Operations variant");
+        }
+
+        // Camera section
+        let file = PresetFile::from_preset(&preset, PresetKind::Camera);
+        let json = export_preset_file_json(&file, false);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Camera);
+
+        // Phosphor section
+        let file = PresetFile::from_preset(&preset, PresetKind::Phosphor);
+        let json = export_preset_file_json(&file, false);
+        let parsed = import_preset_file_json(&json).unwrap();
+        assert_eq!(parsed.kind(), PresetKind::Phosphor);
+    }
+
+    #[test]
+    fn preset_file_apply_to_preset() {
+        let registry = Registry::new();
+        let mut preset = Preset::default();
+
+        // Create a section preset with a layer
+        let mut ops_preset = Preset::default();
+        ops_preset.pipeline.operations.push(make_layer("rotate", &registry).unwrap());
+        let file = PresetFile::from_preset(&ops_preset, PresetKind::Operations);
+
+        // Apply to empty preset
+        assert!(preset.pipeline.operations.is_empty());
+        file.apply_to_preset(&mut preset);
+        assert_eq!(preset.pipeline.operations.len(), 1);
+        assert_eq!(preset.pipeline.operations[0].type_key, "rotate");
     }
 }

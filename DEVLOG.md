@@ -200,3 +200,142 @@ Grid geometry generated on GPU via compute shader. Pipeline operations and lift 
 ### Phase 2.6: egui UI
 
 Full control panel matching the web prototype: tempo, palette, lattice scale/density, operation layers, lift layers, quaternion, camera position, camera lens, distortion. Layer add/remove/reorder (button-based) with blend animation. Overlay system at fixed screen positions (signal flow bottom-left, active layers top-left, dim count top-right, FPS bottom-right) with keyboard toggles (S/A/D/F). Preset save/load via native file dialogs (`rfd` crate). Animated slider positions track resolved param values in real time.
+
+### Phase 2.7: Spout Texture Sharing
+
+Windows-only Spout sender via SpoutDX FFI bridge. `SpoutSender` wraps extern "C" calls to `spout_sender_create/open/send_image/close/destroy`. GPU readback via `readback_texture()` copies the rendered texture to a CPU-side buffer (row-aligned to `COPY_BYTES_PER_ROW_ALIGNMENT`, padding stripped). UI toggle in control panel: "Spout: Send" checkbox with optional "Include overlays" for choosing pre- or post-overlay readback.
+
+### Phase 2.8: Viewport Resolution — Camera-Owned Render Target
+
+Decoupled render resolution from window size. Previously the lattice rendered directly to the window surface, so resizing the window changed the camera's perspective arbitrarily.
+
+**Architecture**: `Viewport { width, height }` added to `Preset` (default 1920x1080). The renderer creates an offscreen `wgpu::Texture` at viewport dimensions (`RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`). The lattice renders to this offscreen texture; camera aspect ratio derives from viewport dimensions. A blit pass samples the offscreen texture via a fullscreen triangle shader and composites it onto the window surface with letterboxing. The blit viewport rect is computed by `letterbox_viewport()` to preserve aspect ratio with black bars.
+
+**Key properties**:
+- Resizing the window only changes the preview scale — lattice aspect ratio stays locked
+- Viewport is a structural preset property, not animatable
+- Spout reads from the offscreen texture at native viewport resolution (pixel-perfect output)
+- `ensure_offscreen()` lazily creates/resizes the offscreen texture on dimension change
+- UI: DragValue fields for width/height (range 320-7680) + preset buttons (HD 1920x1080, 2K 2560x1440, 4K 3840x2160)
+
+### Phase 2.9: Lattice Family
+
+Five lattice substrate types, each with per-type parameters:
+
+- **Cartesian** — the original rectangular grid (no extra params)
+- **Polar** — concentric rings + radial spokes (spoke count)
+- **Hexagonal** — three line families at 0°/60°/120° clipped to hexagonal boundary with explicit outline
+- **Log-polar** — logarithmic vertex spacing on spokes matching ring distribution (spoke count, inner radius)
+- **Bipolar** — exact σ/τ curve formulas with dual foci (focus distance, tau count)
+
+CPU grid generation for each type (compute shader remains lattice-agnostic). Smooth vertex morphing transitions between lattice types (cosine-eased, 0.4s). UI: type selector buttons + per-type controls in the lattice section.
+
+Tempo uncapped to 1,000,000 BPM with logarithmic slider, manual entry via DragValue, and grouped BPM presets (slow/musical/fast/raster) accessible via popup.
+
+### Phase 2.10: Compositional Depth
+
+Two major expansions:
+
+**Decoupled operation centers**: `cx, cy` shift params added to conformal/radial operations (zPow, zInv, zExp, zLog, zSin, zCos, mobius, spiral, pinch, swirl, radialSine, angleWarp, ripple). Implementation: translate by `(-cx, -cy)` before applying, translate back after. Standard `Param` objects — animatable, modulatable.
+
+**Extended distortion model**: Full Brown-Conrady implementation:
+- k3, k4 higher radial terms (`1 + k1*r^2 + k2*r^4 + k3*r^6 + k4*r^8`)
+- Tangential distortion p1, p2 (`dx = 2*p1*x*y + p2*(r^2 + 2*x^2)`)
+- Decoupled distortion center (center_x, center_y — separate from NDC origin)
+- Anamorphic squeeze (per-axis distortion scaling)
+- All new params as `ToggleParam` with animation support
+
+**Caustic overlay**: Visualization of `det J = 0` fold/cusp curves. Threshold `|det J|` below epsilon, render affected vertices with distinct color. Moved from pipeline overlay to the visualization overlay system.
+
+### Phase 2.12: Phosphor — Rendering Character
+
+Complete rendering character overhaul replacing flat-color wireframe with a phosphor display emulation:
+
+**Beam rendering**: Lines replaced with oriented quads (beam width, beam intensity). Quad geometry generated in the vertex shader from line endpoints + camera-facing expansion. Allows variable width and intensity falloff.
+
+**HDR persistence**: Off-screen persistence buffer accumulates previous frames with configurable decay rate. New frame blends with persistence buffer using blend_mix parameter. Enables CRT-like afterglow trails.
+
+**Bloom**: Gaussian blur post-process with configurable intensity, radius, and threshold. Applied to the composited (current + persistence) frame in a separate render pass.
+
+**Color grading**: Gain (overall brightness), saturation (color intensity), gamma (tone curve). Applied as final pass before output.
+
+All phosphor parameters are `ToggleParam` objects with full animation support (value, min, max, anim, shape, ratio, offset, modulator).
+
+### Phase 2.12b: Visualization Overlays
+
+GPU-computed diagnostic overlays rendered alongside the lattice:
+
+- **Domain coloring** — phase + magnitude visualization of the complex mapping (HSL color wheel for argument, brightness for modulus)
+- **Curl** — curl magnitude of the 2D vector field (red = positive, blue = negative)
+- **Conformal defect** — deviation from angle-preserving mapping (highlights where the transformation breaks conformality)
+- **Normal shading** — surface normal visualization for lifted 3D geometry (Lambertian shading against a fixed light direction)
+
+Each overlay is a toggle in the top strip's "Vis:" row. The caustic overlay (from 2.10) was moved into this system. Overlays are computed in the fragment shader using the Jacobian and surface data already available from the pipeline.
+
+### Performance UI Redesign
+
+Complete UI architecture rewrite for dense, performance-oriented layout:
+
+**Compact widgets**: Replaced the old `param_widget`/`toggle_param_widget` (multi-line, always-visible controls) with `compact_param_widget`/`compact_toggle_param_widget` (single-line slider + anim checkbox + ratio badge). Detail controls (shape, ratio presets, min/max, offset, FM modulator) moved to popup windows accessible via `...` button.
+
+**Popup system**: `OpenPopups` state stored in egui's type-map. Toggleable windows for param detail, BPM presets, and ratio presets. Windows close on X button or by clicking the `...` button again.
+
+**Responsive column layout**: 3-5 columns based on window width (min 500px per column). At 5 columns, camera splits into Position+Lens / Distortion+Quaternion.
+
+**Top strip**: Two-row layout:
+1. Tempo (BPM drag + log slider + popup), preset name/save/load, palette combo, viewport size + HD/4K buttons, Spout toggle
+2. Overlay checkboxes (Signal/Dim/Layers/FPS) + visualization overlays (Caustic/Domain/Curl/Conformal/Normals)
+
+**`section_with_toggle`**: Collapsible section header with group-mute checkbox. Clicking the checkbox toggles all params in the section. Used for Position, Lens, Distortion, Phosphor.
+
+**Layer rows**: Collapsible layer headers with enable checkbox, expand arrow, type label, and inline blend slider. Expanded content shows type combo, full blend widget, per-param widgets, and move/remove buttons.
+
+### Phase 2.13: Expanded Registries + Preset System
+
+Three-part expansion: new operations/lifts, preset infrastructure, and timing corrections.
+
+**7 new operations** (25 -> 32 total):
+- **Utility**: `wrap` (modular tiling), `quantize` (grid snapping), `clamp` (radial containment)
+- **Complex**: `joukowski` (z + a/z, conformal airfoil shapes with smooth origin fade), `zTan` (complex tangent with magnitude clamping)
+- **Polar**: `kaleidoscope` (N-fold angular symmetry with mirror)
+- **Wave**: `noise` (trig-based 2D displacement noise)
+
+Each operation added in Rust (ops.rs), WGSL (compute.wgsl), registry (registry.rs), and GPU dispatch (gpu.rs) with unit tests.
+
+**3 new lifts** (15 -> 18 total):
+- **Height**: `zSaddle` (hyperbolic paraboloid: dz = amp * x * y), `zTerrace` (quantized staircase surface)
+- **Full-3D**: `toroidal` (wrap grid onto torus surface)
+
+**Fixed `mixed` op discrepancy**: WGSL was computing z^2 (redundant with zPow n=2) instead of the Rust mixed-monomial map (x^2*y^3, -x^3*y^2).
+
+**Preset system**:
+- `PresetFile` wrapper type with `kind` discriminator (Full, Operations, Lift, Camera, Phosphor, Sampling)
+- `PresetKind` enum with `dir_name()` for library subdirectories
+- Preset library at `~/.polyform/presets/` with subdirectories per section
+- `install_factory_presets()` writes 15 built-in presets to library on startup
+- Section presets: save/load individual sections via header buttons with inline ComboBox dropdowns
+- Replaced blocking file dialogs with non-blocking egui ComboBox dropdowns for preset loading
+
+**15 factory presets** across five categories:
+- Foundations: conformal zoo, mobius dance, spiral galaxy, sine lattice, kaleidoscope
+- Complex compositions: crystal, warp field, pixel drift, event horizon, reef
+- Camera-focused: tunnel, flyover, lens
+- Phosphor character: glow, strobe
+
+**Preset morphing** (`morph.rs`):
+- `MorphState`: source, target, duration, elapsed time with cosine easing
+- `blend_presets()`: interpolates all params between source and target presets
+- Matching layers (by UUID) interpolate all params; unmatched source layers fade out, unmatched target layers fade in
+- Animation disabled during morph (`anim: false` in lerp_param) -- prevents rapid cycling from animation engine resolving mid-transition params
+- Camera, quaternion, sampling, phosphor all interpolated with appropriate handling (continuous params lerp, discrete values snap at midpoint)
+- Morph duration adjustable via UI (default 3.0s), displayed in top strip
+
+**BPM timing fix**: Changed BPM-to-Hz conversion from `/60` to `/240`. This makes ratio=1 mean "one oscillation per bar (4 beats in 4/4)" -- standard musical LFO convention. At 120 BPM, ratio=1 gives a 2-second cycle (one bar). At 30 BPM, ratio=1 gives an 8-second cycle. Previously 30 BPM felt as fast as a 2-second oscillation.
+
+**Toggle/morph time separation**: Individual param toggles, layer toggles, and mode switches now use a fixed 0.3s blend time (`TOGGLE_BLEND_TIME`), separate from the morph duration (`blend_time`, default 3.0s). Previously both used the same value, causing phosphor toggles to take 3 seconds to respond after the morph duration was increased.
+
+**Joukowski singularity handling**: Replaced hard clamp (`max(r2, 0.01)`) with smooth fade -- joukowski effect linearly fades to identity below r=0.3, preventing the origin spike/line artifact in the crystal preset.
+
+**Camera orbit safety**: Factory preset orbitY ranges changed from `min: 0` to `min: 0.15` to avoid the camera pole degeneracy (up-vector flip when looking straight down).
+
+169 tests passing (165 core + 4 app).

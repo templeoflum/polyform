@@ -1,9 +1,113 @@
+use std::collections::HashSet;
+
 use polyform_core::animation::PipelineKind;
 use polyform_core::frame_state::FrameState;
 use polyform_core::palette::PALETTE_KEYS;
 use polyform_core::preset::Preset;
 use polyform_core::registry::Registry;
+use polyform_core::preset_io::PresetKind;
 use polyform_core::types::{LatticeType, Param, ProjectionMode, QuaternionMode, ShapeFunction, ToggleParam};
+
+// =============================================================================
+// Popup state (stored in egui's type-map)
+// =============================================================================
+
+#[derive(Clone, Default)]
+struct OpenPopups(HashSet<String>);
+
+fn is_popup_open(ctx: &egui::Context, id: &str) -> bool {
+    ctx.data(|d| {
+        d.get_temp::<OpenPopups>(egui::Id::NULL)
+            .map_or(false, |p| p.0.contains(id))
+    })
+}
+
+fn toggle_popup(ctx: &egui::Context, id: &str) {
+    ctx.data_mut(|d| {
+        let mut popups = d.get_temp::<OpenPopups>(egui::Id::NULL).unwrap_or_default();
+        if !popups.0.remove(id) {
+            popups.0.insert(id.to_string());
+        }
+        d.insert_temp(egui::Id::NULL, popups);
+    });
+}
+
+fn close_popup(ctx: &egui::Context, id: &str) {
+    ctx.data_mut(|d| {
+        let mut popups = d.get_temp::<OpenPopups>(egui::Id::NULL).unwrap_or_default();
+        popups.0.remove(id);
+        d.insert_temp(egui::Id::NULL, popups);
+    });
+}
+
+/// Small save/load preset buttons for a section header.
+fn section_preset_buttons(
+    ui: &mut egui::Ui,
+    kind: PresetKind,
+    actions: &mut Vec<UiAction>,
+    section_id: &str,
+) {
+    if ui.small_button("\u{1f4be}").on_hover_text("Save section preset").clicked() {
+        actions.push(UiAction::SaveSectionPreset(kind));
+    }
+    let combo_id = format!("section_load_{}", section_id);
+    egui::ComboBox::from_id_salt(&combo_id)
+        .selected_text("\u{1f4c2}")
+        .width(30.0)
+        .show_ui(ui, |ui| {
+            let entries = crate::preset_library::list_presets(kind);
+            if entries.is_empty() {
+                ui.label("(no presets)");
+            } else {
+                for entry in &entries {
+                    if ui.selectable_label(false, &entry.name).clicked() {
+                        actions.push(UiAction::LoadSectionPreset(kind, entry.path.clone()));
+                    }
+                }
+            }
+        });
+}
+
+/// Collapsible section with a group-mute checkbox visible on the header line.
+/// Returns true if the body is open (caller renders body content after this).
+/// When `preset_kind` is provided, save/load preset buttons are rendered on the header.
+fn section_with_toggle(
+    ui: &mut egui::Ui,
+    id_str: &str,
+    label: &str,
+    default_open: bool,
+    any_on: bool,
+    keys: &[&str],
+    actions: &mut Vec<UiAction>,
+    preset_kind: Option<PresetKind>,
+) -> bool {
+    let id = egui::Id::new(id_str);
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(), id, default_open,
+    );
+    let is_open = state.is_open();
+
+    ui.horizontal(|ui| {
+        let mut group_on = any_on;
+        if ui.checkbox(&mut group_on, "").changed() {
+            for key in keys {
+                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
+            }
+        }
+        let icon = if is_open { "\u{25BC}" } else { "\u{25B6}" };
+        if ui.small_button(icon).clicked() {
+            state.toggle(ui);
+        }
+        ui.strong(label);
+        if let Some(kind) = preset_kind {
+            section_preset_buttons(ui, kind, actions, id_str);
+        }
+    });
+
+    let open = state.is_open();
+    state.store(ui.ctx());
+    open
+}
 
 // =============================================================================
 // Constants
@@ -219,6 +323,7 @@ pub enum UiAction {
     MoveLayer(PipelineKind, usize, i32), // index, direction (-1 up, +1 down)
     ChangeLayerType(PipelineKind, usize, String),
     SetLayerEnabled(PipelineKind, String, bool),
+    SetAllLayersEnabled(PipelineKind, bool),
     SetPalette(String),
     SetProjection(ProjectionMode),
     SetQuatOn(bool),
@@ -229,13 +334,16 @@ pub enum UiAction {
     ParamGrabEnd(ParamField),          // user released an animated slider
     SetPresetName(String),
     SavePreset,
-    LoadPreset,
     SetViewportSize(u32, u32),
     SetLatticeType(LatticeType),
     SetLatticeSpokeCount(u32),
     SetLatticeInnerRadius(f64),
     SetLatticeFocusDistance(f64),
     SetLatticeTauCount(u32),
+    SaveSectionPreset(PresetKind),
+    LoadSectionPreset(PresetKind, std::path::PathBuf),
+    SetBlendTime(f64),
+    CancelMorph,
     #[cfg(target_os = "windows")]
     SetSpoutEnabled(bool),
     #[cfg(target_os = "windows")]
@@ -259,7 +367,7 @@ pub enum ParamField {
 }
 
 // =============================================================================
-// Main UI builder
+// Overlay state
 // =============================================================================
 
 /// Overlay toggle state, owned by the caller (App).
@@ -303,138 +411,124 @@ impl Default for OverlayState {
     }
 }
 
+// =============================================================================
+// Main UI builder — top strip + responsive columns
+// =============================================================================
+
 pub fn build_ui(
     ctx: &egui::Context,
     preset: &Preset,
     registry: &Registry,
     frame_state: Option<&FrameState>,
     overlay: &mut OverlayState,
+    tempo: &Param,
+    palette: &str,
+    blend_time: f64,
+    viewport_width: u32,
+    viewport_height: u32,
 ) -> Vec<UiAction> {
     let mut actions = Vec::new();
 
+    // Sync viewport from session state
+    overlay.viewport_width = viewport_width;
+    overlay.viewport_height = viewport_height;
+
     egui::CentralPanel::default().show(ctx, |ui| {
-        ui.heading("Polyform Controls");
+        // ── Top strip: global controls ──
+        top_strip(ctx, ui, preset, overlay, &mut actions, tempo, palette, blend_time);
         ui.separator();
 
-        // Sync viewport from preset
-        overlay.viewport_width = preset.viewport.width;
-        overlay.viewport_height = preset.viewport.height;
-
-        // Top section: 3 columns — [preset/output] [lattice] [tempo]
-        ui.columns(3, |cols| {
-            // Column 0: Preset identity + output
-            cols[0].push_id("top_preset", |ui| {
-                header_section(ui, preset, &mut actions);
-
-                ui.horizontal(|ui| {
-                    ui.label("Overlays:");
-                    ui.checkbox(&mut overlay.show_signal_flow, "Signal");
-                    ui.checkbox(&mut overlay.show_dim_count, "Dim");
-                    ui.checkbox(&mut overlay.show_active_layers, "Layers");
-                    ui.checkbox(&mut overlay.show_fps, "FPS");
-                    ui.checkbox(&mut overlay.show_caustic, "Caustic");
-                    ui.checkbox(&mut overlay.show_domain_coloring, "Domain");
-                    ui.checkbox(&mut overlay.show_curl, "Curl");
-                    ui.checkbox(&mut overlay.show_conformal, "Conformal");
-                    ui.checkbox(&mut overlay.show_normal_shading, "Normals");
-                });
-
-                viewport_section(ui, overlay, &mut actions);
-
-                #[cfg(target_os = "windows")]
-                {
-                    ui.horizontal(|ui| {
-                        ui.label("Spout:");
-                        if ui.checkbox(&mut overlay.spout_enabled, "Send").changed() {
-                            actions.push(UiAction::SetSpoutEnabled(overlay.spout_enabled));
-                        }
-                        if overlay.spout_enabled {
-                            if ui.checkbox(&mut overlay.spout_include_overlays, "Include overlays").changed() {
-                                actions.push(UiAction::SetSpoutOverlays(overlay.spout_include_overlays));
-                            }
-                        }
-                    });
-                }
-            });
-
-            // Column 1: Lattice / sampling
-            cols[1].push_id("top_lattice", |ui| {
-                sampling_section(ui, preset, frame_state, &mut actions);
-            });
-
-            // Column 2: Tempo
-            cols[2].push_id("top_tempo", |ui| {
-                tempo_section(ui, preset, &mut actions);
-            });
-        });
-
-        ui.separator();
-
-        // Multi-column layout: each column scrolls independently
+        // ── Column body ──
         let available = ui.available_size();
-        let col_count = if available.x > 800.0 { 3 } else if available.x > 500.0 { 2 } else { 1 };
+        let min_col = 500.0_f32;
+        let col_count = ((available.x / min_col).floor() as usize).clamp(3, 5);
         let col_width = available.x / col_count as f32 - 8.0;
 
         ui.columns(col_count, |columns| {
-            // Column 0: Operations + Lift
-            columns[0].push_id("col_ops", |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("scroll_ops")
-                    .max_height(available.y)
-                    .show(ui, |ui| {
-                        ui.set_min_width(col_width);
-                        pipeline_section(ui, "Operations", PipelineKind::Operations,
-                            &preset.pipeline.operations, registry, frame_state, &mut actions);
-                        ui.separator();
-                        pipeline_section(ui, "Lift", PipelineKind::Lift,
-                            &preset.pipeline.lift, registry, frame_state, &mut actions);
+            match col_count {
+                5 => {
+                    // [Ops] [Lift] [Lattice+Phosphor+Vis] [Camera] [Camera cont.]
+                    columns[0].push_id("col_ops", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_ops").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            operations_column(ctx, ui, preset, registry, frame_state, &mut actions);
+                        });
                     });
-            });
-
-            if col_count >= 2 {
-                // Column 1: Camera
-                columns[1].push_id("col_cam", |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("scroll_cam")
-                        .max_height(available.y)
-                        .show(ui, |ui| {
+                    columns[1].push_id("col_lift", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_lift").show(ui, |ui| {
                             ui.set_min_width(col_width);
-                            camera_position_section(ui, preset, frame_state, &mut actions);
-                            ui.separator();
-                            camera_lens_section(ui, preset, frame_state, &mut actions);
-                            ui.separator();
-                            camera_distortion_section(ui, preset, frame_state, &mut actions);
-                            ui.separator();
-                            phosphor_section(ui, preset, frame_state, &mut actions);
+                            lift_column(ctx, ui, preset, registry, frame_state, &mut actions);
                         });
-                });
-            }
-
-            if col_count >= 3 {
-                // Column 2: Quaternion
-                columns[2].push_id("col_quat", |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("scroll_quat")
-                        .max_height(available.y)
-                        .show(ui, |ui| {
+                    });
+                    columns[2].push_id("col_lattice", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_lattice").show(ui, |ui| {
                             ui.set_min_width(col_width);
-                            quaternion_section(ui, preset, frame_state, &mut actions);
+                            lattice_rendering_column(ctx, ui, preset, frame_state, overlay, &mut actions);
                         });
-                });
-            }
-
-            // Fallback: if single column, put camera + quat below pipelines
-            if col_count == 1 {
-                columns[0].push_id("col_rest", |ui| {
-                    ui.separator();
-                    camera_position_section(ui, preset, frame_state, &mut actions);
-                    ui.separator();
-                    camera_lens_section(ui, preset, frame_state, &mut actions);
-                    ui.separator();
-                    phosphor_section(ui, preset, frame_state, &mut actions);
-                    ui.separator();
-                    quaternion_section(ui, preset, frame_state, &mut actions);
-                });
+                    });
+                    columns[3].push_id("col_cam1", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_cam1").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            camera_position_lens_section(ctx, ui, preset, frame_state, &mut actions);
+                        });
+                    });
+                    columns[4].push_id("col_cam2", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_cam2").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            camera_distortion_quat_section(ctx, ui, preset, frame_state, &mut actions);
+                        });
+                    });
+                }
+                4 => {
+                    // [Ops] [Lift] [Lattice+Phosphor+Vis] [Camera]
+                    columns[0].push_id("col_ops", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_ops").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            operations_column(ctx, ui, preset, registry, frame_state, &mut actions);
+                        });
+                    });
+                    columns[1].push_id("col_lift", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_lift").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            lift_column(ctx, ui, preset, registry, frame_state, &mut actions);
+                        });
+                    });
+                    columns[2].push_id("col_lattice", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_lattice").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            lattice_rendering_column(ctx, ui, preset, frame_state, overlay, &mut actions);
+                        });
+                    });
+                    columns[3].push_id("col_cam", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_cam").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            camera_column(ctx, ui, preset, frame_state, &mut actions);
+                        });
+                    });
+                }
+                _ => {
+                    // 3 cols: [Ops+Lift] [Lattice+Phosphor+Vis] [Camera]
+                    columns[0].push_id("col_ops_lift", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_ops_lift").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            operations_column(ctx, ui, preset, registry, frame_state, &mut actions);
+                            ui.separator();
+                            lift_column(ctx, ui, preset, registry, frame_state, &mut actions);
+                        });
+                    });
+                    columns[1].push_id("col_lattice", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_lattice").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            lattice_rendering_column(ctx, ui, preset, frame_state, overlay, &mut actions);
+                        });
+                    });
+                    columns[2].push_id("col_cam", |ui| {
+                        egui::ScrollArea::vertical().id_salt("scroll_cam").show(ui, |ui| {
+                            ui.set_min_width(col_width);
+                            camera_column(ctx, ui, preset, frame_state, &mut actions);
+                        });
+                    });
+                }
             }
         });
     });
@@ -443,53 +537,24 @@ pub fn build_ui(
 }
 
 // =============================================================================
-// Header section
+// Top strip: Tempo, Preset, Palette, Viewport, Spout, Overlays
 // =============================================================================
 
-fn header_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAction>) {
+fn top_strip(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    preset: &Preset,
+    overlay: &mut OverlayState,
+    actions: &mut Vec<UiAction>,
+    tempo: &Param,
+    palette: &str,
+    blend_time: f64,
+) {
+    // Row 1: Tempo + Preset name + Palette + Viewport + Spout
     ui.horizontal(|ui| {
-        ui.label("Name:");
-        let mut name = preset.metadata.name.clone();
-        if ui.text_edit_singleline(&mut name).changed() {
-            actions.push(UiAction::SetPresetName(name));
-        }
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Palette:");
-        let current = &preset.palette;
-        egui::ComboBox::from_id_salt("palette_combo")
-            .selected_text(current.as_str())
-            .show_ui(ui, |ui| {
-                for &key in PALETTE_KEYS {
-                    if ui.selectable_label(current == key, key).clicked() {
-                        actions.push(UiAction::SetPalette(key.to_string()));
-                    }
-                }
-            });
-    });
-
-    ui.horizontal(|ui| {
-        if ui.button("Save Preset").clicked() {
-            actions.push(UiAction::SavePreset);
-        }
-        if ui.button("Load Preset").clicked() {
-            actions.push(UiAction::LoadPreset);
-        }
-    });
-}
-
-// =============================================================================
-// Tempo section (BPM display with preset buttons)
-// =============================================================================
-
-fn tempo_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAction>) {
-    ui.label("Tempo");
-
-    let bpm = preset.tempo.value * 60.0;
-
-    // Manual BPM entry — accepts any value from 0.01 to 1,000,000
-    ui.horizontal(|ui| {
+        // Tempo: drag value + log slider + popup for presets
+        // BPM / 240 = Hz: ratio=1 means one oscillation per bar (4 beats in 4/4)
+        let bpm = tempo.value * 240.0;
         let mut bpm_entry = bpm;
         if ui.add(
             egui::DragValue::new(&mut bpm_entry)
@@ -497,185 +562,1012 @@ fn tempo_section(ui: &mut egui::Ui, preset: &Preset, actions: &mut Vec<UiAction>
                 .range(0.01..=1_000_000.0)
                 .suffix(" bpm")
         ).changed() {
-            actions.push(UiAction::SetParam(ParamField::Tempo, bpm_entry / 60.0));
+            actions.push(UiAction::SetParam(ParamField::Tempo, bpm_entry / 240.0));
+        }
+        let mut bpm_val = bpm.clamp(0.01, 1_000_000.0);
+        if ui.add(
+            egui::Slider::new(&mut bpm_val, 0.01..=1_000_000.0)
+                .logarithmic(true)
+                .show_value(false)
+                .text("")
+        ).changed() {
+            actions.push(UiAction::SetParam(ParamField::Tempo, bpm_val / 240.0));
+        }
+        // Popup for BPM presets
+        let tempo_popup_id = "popup_tempo_presets";
+        if ui.small_button("...").clicked() {
+            toggle_popup(ctx, tempo_popup_id);
+        }
+        if is_popup_open(ctx, tempo_popup_id) {
+            let mut open = true;
+            egui::Window::new("BPM Presets")
+                .id(egui::Id::new(tempo_popup_id))
+                .open(&mut open)
+                .resizable(false)
+                .default_width(400.0)
+                .show(ctx, |ui| {
+                    for group in BPM_GROUPS {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new(group.label).weak().size(10.0));
+                            for &preset_bpm in group.values {
+                                let is_active = (bpm.round() as u32) == preset_bpm;
+                                if ui.selectable_label(is_active, format!("{}", preset_bpm)).clicked() {
+                                    actions.push(UiAction::SetParam(ParamField::Tempo, preset_bpm as f64 / 240.0));
+                                }
+                            }
+                        });
+                    }
+                });
+            if !open {
+                close_popup(ctx, tempo_popup_id);
+            }
+        }
+
+        ui.separator();
+
+        // Preset name
+        let mut name = preset.metadata.name.clone();
+        if ui.add(egui::TextEdit::singleline(&mut name).desired_width(120.0)).changed() {
+            actions.push(UiAction::SetPresetName(name));
+        }
+        if ui.small_button("Save").clicked() {
+            actions.push(UiAction::SavePreset);
+        }
+        egui::ComboBox::from_id_salt("preset_load_combo")
+            .selected_text("Load")
+            .width(60.0)
+            .show_ui(ui, |ui| {
+                let entries = crate::preset_library::list_presets(PresetKind::Full);
+                if entries.is_empty() {
+                    ui.label("(no presets)");
+                } else {
+                    for entry in &entries {
+                        if ui.selectable_label(false, &entry.name).clicked() {
+                            actions.push(UiAction::LoadSectionPreset(PresetKind::Full, entry.path.clone()));
+                        }
+                    }
+                }
+            });
+
+        ui.separator();
+
+        // Palette
+        let current = palette;
+        egui::ComboBox::from_id_salt("palette_combo")
+            .selected_text(current)
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for &key in PALETTE_KEYS {
+                    if ui.selectable_label(current == key, key).clicked() {
+                        actions.push(UiAction::SetPalette(key.to_string()));
+                    }
+                }
+            });
+
+        ui.separator();
+
+        // Morph duration
+        let mut morph_s = blend_time;
+        ui.label(egui::RichText::new("morph").weak());
+        if ui.add(
+            egui::DragValue::new(&mut morph_s)
+                .speed(0.1)
+                .range(0.1..=30.0)
+                .suffix("s")
+        ).changed() {
+            actions.push(UiAction::SetBlendTime(morph_s));
+        }
+
+        ui.separator();
+
+        // Viewport
+        let mut w = overlay.viewport_width as i32;
+        let mut h = overlay.viewport_height as i32;
+        let w_changed = ui.add(egui::DragValue::new(&mut w).speed(1).range(320..=7680)).changed();
+        ui.label("\u{00d7}");
+        let h_changed = ui.add(egui::DragValue::new(&mut h).speed(1).range(320..=7680)).changed();
+        if w_changed || h_changed {
+            overlay.viewport_width = w as u32;
+            overlay.viewport_height = h as u32;
+            actions.push(UiAction::SetViewportSize(w as u32, h as u32));
+        }
+        if ui.small_button("HD").clicked() {
+            overlay.viewport_width = 1920; overlay.viewport_height = 1080;
+            actions.push(UiAction::SetViewportSize(1920, 1080));
+        }
+        if ui.small_button("4K").clicked() {
+            overlay.viewport_width = 3840; overlay.viewport_height = 2160;
+            actions.push(UiAction::SetViewportSize(3840, 2160));
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            ui.separator();
+            if ui.checkbox(&mut overlay.spout_enabled, "Spout").changed() {
+                actions.push(UiAction::SetSpoutEnabled(overlay.spout_enabled));
+            }
+            if overlay.spout_enabled {
+                if ui.checkbox(&mut overlay.spout_include_overlays, "w/ overlays").changed() {
+                    actions.push(UiAction::SetSpoutOverlays(overlay.spout_include_overlays));
+                }
+            }
         }
     });
 
-    // Logarithmic slider for quick exploration
-    let mut bpm_val = bpm.clamp(0.01, 1_000_000.0);
-    if ui.add(egui::Slider::new(&mut bpm_val, 0.01..=1_000_000.0)
-        .logarithmic(true)
-        .show_value(false))
-        .changed()
-    {
-        actions.push(UiAction::SetParam(ParamField::Tempo, bpm_val / 60.0));
+    // Row 2: Overlays
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Overlays:").weak());
+        ui.checkbox(&mut overlay.show_signal_flow, "Signal");
+        ui.checkbox(&mut overlay.show_dim_count, "Dim");
+        ui.checkbox(&mut overlay.show_active_layers, "Layers");
+        ui.checkbox(&mut overlay.show_fps, "FPS");
+        ui.separator();
+        ui.label(egui::RichText::new("Vis:").weak());
+        ui.checkbox(&mut overlay.show_caustic, "Caustic");
+        ui.checkbox(&mut overlay.show_domain_coloring, "Domain");
+        ui.checkbox(&mut overlay.show_curl, "Curl");
+        ui.checkbox(&mut overlay.show_conformal, "Conformal");
+        ui.checkbox(&mut overlay.show_normal_shading, "Normals");
+    });
+}
+
+// =============================================================================
+// Camera split helpers for 5-column layout
+// =============================================================================
+
+fn camera_position_lens_section(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    preset: &Preset,
+    frame_state: Option<&FrameState>,
+    actions: &mut Vec<UiAction>,
+) {
+    ui.horizontal(|ui| {
+        ui.strong("Camera");
+        section_preset_buttons(ui, PresetKind::Camera, actions, "sec_camera");
+    });
+
+    // Position
+    let pos = &preset.camera.position;
+    let pos_keys: &[&str] = &[
+        "camera.position.orbitX", "camera.position.orbitY",
+        "camera.position.distance", "camera.position.targetX",
+        "camera.position.targetY", "camera.position.roll",
+    ];
+    let pos_any_on = pos.orbit_x.on || pos.orbit_y.on || pos.distance.on
+        || pos.target_x.on || pos.target_y.on || pos.roll.on;
+
+    if section_with_toggle(ui, "sec_position", "Position", true, pos_any_on, pos_keys, actions, Some(PresetKind::Camera)) {
+        compact_toggle_param_widget(ctx, ui, "orbit x", &pos.orbit_x, "camera.position.orbitX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "orbit y", &pos.orbit_y, "camera.position.orbitY", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "distance", &pos.distance, "camera.position.distance", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "target x", &pos.target_x, "camera.position.targetX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "target y", &pos.target_y, "camera.position.targetY", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "roll", &pos.roll, "camera.position.roll", frame_state, actions);
     }
 
-    // BPM preset buttons — grouped in rows
-    for group in BPM_GROUPS {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(group.label).weak().size(10.0));
-            for &preset_bpm in group.values {
-                let is_active = (bpm.round() as u32) == preset_bpm;
-                if ui.selectable_label(is_active, format!("{}", preset_bpm)).clicked() {
-                    actions.push(UiAction::SetParam(ParamField::Tempo, preset_bpm as f64 / 60.0));
-                }
+    // Lens
+    let lens = &preset.camera.lens;
+    let lens_keys: &[&str] = &[
+        "camera.lens.focalLength", "camera.lens.sensorSize",
+        "camera.lens.orthoZoom", "camera.lens.anamorphic",
+        "camera.lens.shiftX", "camera.lens.shiftY",
+    ];
+    let lens_any_on = lens.focal_length.on || lens.sensor_size.on || lens.ortho_zoom.on
+        || lens.anamorphic.on || lens.shift_x.on || lens.shift_y.on;
+
+    if section_with_toggle(ui, "sec_lens", "Lens", true, lens_any_on, lens_keys, actions, Some(PresetKind::Camera)) {
+        ui.horizontal(|ui| {
+            let proj = preset.camera.lens.projection;
+            if ui.selectable_label(proj == ProjectionMode::Perspective, "Persp").clicked() && proj != ProjectionMode::Perspective {
+                actions.push(UiAction::SetProjection(ProjectionMode::Perspective));
+            }
+            if ui.selectable_label(proj == ProjectionMode::Orthographic, "Ortho").clicked() && proj != ProjectionMode::Orthographic {
+                actions.push(UiAction::SetProjection(ProjectionMode::Orthographic));
             }
         });
+        compact_toggle_param_widget(ctx, ui, "focal", &lens.focal_length, "camera.lens.focalLength", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "sensor", &lens.sensor_size, "camera.lens.sensorSize", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "ortho z", &lens.ortho_zoom, "camera.lens.orthoZoom", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "anamor", &lens.anamorphic, "camera.lens.anamorphic", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "shift x", &lens.shift_x, "camera.lens.shiftX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "shift y", &lens.shift_y, "camera.lens.shiftY", frame_state, actions);
+    }
+}
+
+fn camera_distortion_quat_section(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    preset: &Preset,
+    frame_state: Option<&FrameState>,
+    actions: &mut Vec<UiAction>,
+) {
+    // Distortion
+    let dist = &preset.camera.distortion;
+    let dist_keys: &[&str] = &[
+        "camera.distortion.k1", "camera.distortion.k2",
+        "camera.distortion.k3", "camera.distortion.k4",
+        "camera.distortion.p1", "camera.distortion.p2",
+        "camera.distortion.centerX", "camera.distortion.centerY",
+        "camera.distortion.squeeze",
+    ];
+    let dist_any_on = dist.k1.on || dist.k2.on || dist.k3.on || dist.k4.on
+        || dist.p1.on || dist.p2.on || dist.center_x.on || dist.center_y.on || dist.squeeze.on;
+
+    if section_with_toggle(ui, "sec_distortion", "Distortion", false, dist_any_on, dist_keys, actions, Some(PresetKind::Camera)) {
+        compact_toggle_param_widget(ctx, ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "k4", &dist.k4, "camera.distortion.k4", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "p1", &dist.p1, "camera.distortion.p1", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "p2", &dist.p2, "camera.distortion.p2", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "ctr x", &dist.center_x, "camera.distortion.centerX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "ctr y", &dist.center_y, "camera.distortion.centerY", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "squeeze", &dist.squeeze, "camera.distortion.squeeze", frame_state, actions);
+    }
+
+    // Quaternion (uses enable checkbox, not group toggle)
+    let q = &preset.quaternion;
+    {
+        let id = egui::Id::new("sec_quat");
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(), id, false,
+        );
+        let is_open = state.is_open();
+        ui.horizontal(|ui| {
+            let mut on = q.on;
+            if ui.checkbox(&mut on, "").changed() {
+                actions.push(UiAction::SetQuatOn(on));
+            }
+            let icon = if is_open { "\u{25BC}" } else { "\u{25B6}" };
+            if ui.small_button(icon).clicked() {
+                state.toggle(ui);
+            }
+            ui.strong("Quaternion");
+        });
+        if state.is_open() && q.on {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(q.mode == QuaternionMode::Fixed, "Fixed").clicked() {
+                    actions.push(UiAction::SetQuatMode(QuaternionMode::Fixed));
+                }
+                if ui.selectable_label(q.mode == QuaternionMode::Drift, "Drift").clicked() {
+                    actions.push(UiAction::SetQuatMode(QuaternionMode::Drift));
+                }
+            });
+            let swept_angle = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.angle"));
+            compact_param_widget(ctx, ui, "angle", &q.angle, ParamField::View("quaternion.angle".to_string()), swept_angle, actions);
+            if q.mode == QuaternionMode::Fixed {
+                let swept_ax = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ax"));
+                compact_param_widget(ctx, ui, "ax", &q.ax, ParamField::View("quaternion.ax".to_string()), swept_ax, actions);
+                let swept_ay = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ay"));
+                compact_param_widget(ctx, ui, "ay", &q.ay, ParamField::View("quaternion.ay".to_string()), swept_ay, actions);
+                let swept_az = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.az"));
+                compact_param_widget(ctx, ui, "az", &q.az, ParamField::View("quaternion.az".to_string()), swept_az, actions);
+            }
+            if q.mode == QuaternionMode::Drift {
+                ui.horizontal(|ui| {
+                    ui.label("drift:");
+                    let mut drift = q.drift_speed;
+                    if ui.add(egui::DragValue::new(&mut drift).speed(0.01).range(0.01..=2.0)).changed() {
+                        actions.push(UiAction::SetQuatDriftSpeed(drift));
+                    }
+                });
+            }
+        }
+        state.store(ui.ctx());
     }
 }
 
 // =============================================================================
-// Pipeline sections (operations / lift)
+// Column 1: Operations
 // =============================================================================
 
-fn pipeline_section(
+fn operations_column(
+    ctx: &egui::Context,
     ui: &mut egui::Ui,
-    label: &str,
-    kind: PipelineKind,
-    layers: &[polyform_core::layer::Layer],
+    preset: &Preset,
     registry: &Registry,
     frame_state: Option<&FrameState>,
     actions: &mut Vec<UiAction>,
 ) {
-    let id = ui.make_persistent_id(label);
-    egui::CollapsingHeader::new(label)
-        .id_salt(id)
-        .default_open(true)
-        .show(ui, |ui| {
-            for (idx, layer) in layers.iter().enumerate() {
-                let def_label = match kind {
-                    PipelineKind::Operations => registry.operations.get(layer.type_key.as_str())
-                        .map(|d| d.label),
-                    PipelineKind::Lift => registry.lift.get(layer.type_key.as_str())
-                        .map(|d| d.label),
-                };
-                let display_label = def_label.unwrap_or(&layer.type_key);
+    let layers = &preset.pipeline.operations;
+    let kind = PipelineKind::Operations;
+    let any_enabled = layers.iter().any(|l| l.enabled);
 
-                // Look up the flat layer state for this index to get swept values
-                let flat_layer = frame_state.and_then(|fs| {
-                    let flat_layers = match kind {
-                        PipelineKind::Operations => &fs.operations,
-                        PipelineKind::Lift => &fs.lifts,
-                    };
-                    flat_layers.get(idx)
-                });
+    ui.horizontal(|ui| {
+        let mut group_on = any_enabled;
+        if ui.checkbox(&mut group_on, "").changed() {
+            actions.push(UiAction::SetAllLayersEnabled(kind, group_on));
+        }
+        ui.strong("Operations");
+        section_preset_buttons(ui, PresetKind::Operations, actions, "sec_operations");
+    });
 
-                let layer_id = ui.make_persistent_id(format!("{label}_{}", layer.id));
-                egui::CollapsingHeader::new(format!("{}. {}", idx + 1, display_label))
-                    .id_salt(layer_id)
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        // Enable toggle
-                        let mut enabled = layer.enabled;
-                        if ui.checkbox(&mut enabled, "Enabled").changed() {
-                            actions.push(UiAction::SetLayerEnabled(kind, layer.id.clone(), enabled));
-                        }
+    for (idx, layer) in layers.iter().enumerate() {
+        compact_layer_row(ctx, ui, layer, idx, kind, layers.len(), registry, frame_state, actions);
+    }
 
-                        // Type combo box
-                        let type_entries: Vec<(&str, &str)> = match kind {
-                            PipelineKind::Operations => {
-                                let mut entries: Vec<_> = registry.operations.values()
-                                    .map(|d| (d.key, d.label))
-                                    .collect();
-                                entries.sort_by_key(|e| e.0);
-                                entries
-                            }
-                            PipelineKind::Lift => {
-                                let mut entries: Vec<_> = registry.lift.values()
-                                    .map(|d| (d.key, d.label))
-                                    .collect();
-                                entries.sort_by_key(|e| e.0);
-                                entries
-                            }
-                        };
-
-                        ui.horizontal(|ui| {
-                            ui.label("Type:");
-                            egui::ComboBox::from_id_salt(format!("type_{}_{}", label, layer.id))
-                                .selected_text(display_label)
-                                .show_ui(ui, |ui| {
-                                    for (key, lbl) in &type_entries {
-                                        if ui.selectable_label(*key == layer.type_key.as_str(), *lbl).clicked() {
-                                            actions.push(UiAction::ChangeLayerType(kind, idx, key.to_string()));
-                                        }
-                                    }
-                                });
-                        });
-
-                        // Blend — full param widget (animatable like any other param)
-                        let swept_blend = if layer.blend.anim {
-                            flat_layer.map(|fl| fl.blend)
-                        } else {
-                            flat_layer.and_then(|fl| {
-                                // Show transition-driven blend even when not animating
-                                let diff = (fl.blend - layer.blend.value).abs();
-                                if diff > 0.001 { Some(fl.blend) } else { None }
-                            })
-                        };
-                        param_widget(
-                            ui,
-                            "blend",
-                            &layer.blend,
-                            ParamField::LayerBlend { kind, layer_id: layer.id.clone() },
-                            swept_blend,
-                            actions,
-                        );
-
-                        // Param sliders
-                        // Get param order from registry
-                        let param_order: Vec<&str> = match kind {
-                            PipelineKind::Operations => registry.operations
-                                .get(layer.type_key.as_str())
-                                .map(|d| d.params.iter().map(|p| p.key).collect())
-                                .unwrap_or_default(),
-                            PipelineKind::Lift => registry.lift
-                                .get(layer.type_key.as_str())
-                                .map(|d| d.params.iter().map(|p| p.key).collect())
-                                .unwrap_or_default(),
-                        };
-
-                        for key in param_order {
-                            if let Some(param) = layer.params.get(key) {
-                                let swept_value = if param.anim {
-                                    flat_layer.and_then(|fl| fl.params.get(key).copied())
-                                } else {
-                                    None
-                                };
-                                param_widget(
-                                    ui,
-                                    key,
-                                    param,
-                                    ParamField::LayerParam {
-                                        kind,
-                                        layer_id: layer.id.clone(),
-                                        key: key.to_string(),
-                                    },
-                                    swept_value,
-                                    actions,
-                                );
-                            }
-                        }
-
-                        // Move / Remove buttons
-                        ui.horizontal(|ui| {
-                            if idx > 0 && ui.button("\u{2191} Up").clicked() {
-                                actions.push(UiAction::MoveLayer(kind, idx, -1));
-                            }
-                            if idx < layers.len() - 1 && ui.button("\u{2193} Down").clicked() {
-                                actions.push(UiAction::MoveLayer(kind, idx, 1));
-                            }
-                            if ui.button("Remove").clicked() {
-                                actions.push(UiAction::RemoveLayer(kind, idx));
-                            }
-                        });
-                    });
-            }
-
-            // Add layer button
-            add_layer_button(ui, label, kind, registry, actions);
-        });
+    add_layer_button(ui, "Operations", kind, registry, actions);
 }
+
+// =============================================================================
+// Column 2: Lift
+// =============================================================================
+
+fn lift_column(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    preset: &Preset,
+    registry: &Registry,
+    frame_state: Option<&FrameState>,
+    actions: &mut Vec<UiAction>,
+) {
+    let layers = &preset.pipeline.lift;
+    let kind = PipelineKind::Lift;
+    let any_enabled = layers.iter().any(|l| l.enabled);
+
+    ui.horizontal(|ui| {
+        let mut group_on = any_enabled;
+        if ui.checkbox(&mut group_on, "").changed() {
+            actions.push(UiAction::SetAllLayersEnabled(kind, group_on));
+        }
+        ui.strong("Lift");
+        section_preset_buttons(ui, PresetKind::Lift, actions, "sec_lift");
+    });
+
+    for (idx, layer) in layers.iter().enumerate() {
+        compact_layer_row(ctx, ui, layer, idx, kind, layers.len(), registry, frame_state, actions);
+    }
+
+    add_layer_button(ui, "Lift", kind, registry, actions);
+}
+
+// =============================================================================
+// Column 3: Lattice + Rendering
+// =============================================================================
+
+fn lattice_rendering_column(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    preset: &Preset,
+    frame_state: Option<&FrameState>,
+    _overlay: &mut OverlayState,
+    actions: &mut Vec<UiAction>,
+) {
+    // --- Lattice (no group toggle — scale/density have their own on checkboxes) ---
+    {
+        let id = egui::Id::new("sec_lattice");
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(), id, true,
+        );
+        let is_open = state.is_open();
+        ui.horizontal(|ui| {
+            let icon = if is_open { "\u{25BC}" } else { "\u{25B6}" };
+            if ui.small_button(icon).clicked() {
+                state.toggle(ui);
+            }
+            ui.strong("Lattice");
+            section_preset_buttons(ui, PresetKind::Sampling, actions, "sec_lattice");
+        });
+        if state.is_open() {
+            compact_toggle_param_widget(ctx, ui, "scale", &preset.sampling.scale, "sampling.scale", frame_state, actions);
+            compact_toggle_param_widget(ctx, ui, "density", &preset.sampling.density, "sampling.density", frame_state, actions);
+
+            ui.horizontal(|ui| {
+                let lt = preset.sampling.lattice_type;
+                for &(label, ty) in &[
+                    ("Cart", LatticeType::Cartesian),
+                    ("Polar", LatticeType::Polar),
+                    ("Hex", LatticeType::Hex),
+                    ("LogP", LatticeType::LogPolar),
+                    ("Bipol", LatticeType::Bipolar),
+                ] {
+                    if ui.selectable_label(lt == ty, label).clicked() && lt != ty {
+                        actions.push(UiAction::SetLatticeType(ty));
+                    }
+                }
+            });
+
+            let lp = &preset.sampling.lattice_params;
+            match preset.sampling.lattice_type {
+                LatticeType::Polar => {
+                    ui.horizontal(|ui| {
+                        ui.label("spokes:");
+                        let mut v = lp.spoke_count as i32;
+                        if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
+                            actions.push(UiAction::SetLatticeSpokeCount(v as u32));
+                        }
+                    });
+                }
+                LatticeType::LogPolar => {
+                    ui.horizontal(|ui| {
+                        ui.label("spokes:");
+                        let mut v = lp.spoke_count as i32;
+                        if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
+                            actions.push(UiAction::SetLatticeSpokeCount(v as u32));
+                        }
+                        ui.label("inner r:");
+                        let mut ir = lp.inner_radius;
+                        if ui.add(egui::DragValue::new(&mut ir).speed(0.005).range(0.01..=0.5)).changed() {
+                            actions.push(UiAction::SetLatticeInnerRadius(ir));
+                        }
+                    });
+                }
+                LatticeType::Bipolar => {
+                    ui.horizontal(|ui| {
+                        ui.label("focus:");
+                        let mut v = lp.focus_distance;
+                        if ui.add(egui::DragValue::new(&mut v).speed(0.01).range(0.1..=3.0)).changed() {
+                            actions.push(UiAction::SetLatticeFocusDistance(v));
+                        }
+                        ui.label("tau:");
+                        let mut tc = lp.tau_count as i32;
+                        if ui.add(egui::DragValue::new(&mut tc).speed(1).range(4..=80)).changed() {
+                            actions.push(UiAction::SetLatticeTauCount(tc as u32));
+                        }
+                    });
+                }
+                LatticeType::Cartesian | LatticeType::Hex => {}
+            }
+        }
+        state.store(ui.ctx());
+    }
+
+    // --- Phosphor ---
+    let ph = &preset.phosphor;
+    let ph_keys: &[&str] = &[
+        "phosphor.persistence", "phosphor.beamWidth", "phosphor.beamIntensity",
+        "phosphor.gain", "phosphor.blendMix", "phosphor.saturation",
+        "phosphor.bloomIntensity", "phosphor.bloomRadius", "phosphor.bloomThreshold",
+        "phosphor.gamma",
+    ];
+    let ph_any_on = ph.persistence.on || ph.beam_width.on || ph.beam_intensity.on
+        || ph.gain.on || ph.blend_mix.on || ph.saturation.on
+        || ph.bloom_intensity.on || ph.bloom_radius.on || ph.bloom_threshold.on
+        || ph.gamma.on;
+
+    if section_with_toggle(ui, "sec_phosphor", "Phosphor", true, ph_any_on, ph_keys, actions, Some(PresetKind::Phosphor)) {
+        compact_toggle_param_widget(ctx, ui, "persistence", &ph.persistence, "phosphor.persistence", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "beam width", &ph.beam_width, "phosphor.beamWidth", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "beam drive", &ph.beam_intensity, "phosphor.beamIntensity", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "gain", &ph.gain, "phosphor.gain", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "blend mix", &ph.blend_mix, "phosphor.blendMix", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "saturation", &ph.saturation, "phosphor.saturation", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "bloom", &ph.bloom_intensity, "phosphor.bloomIntensity", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "bloom rad", &ph.bloom_radius, "phosphor.bloomRadius", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "bloom thr", &ph.bloom_threshold, "phosphor.bloomThreshold", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "gamma", &ph.gamma, "phosphor.gamma", frame_state, actions);
+    }
+}
+
+// =============================================================================
+// Column 4: Camera
+// =============================================================================
+
+fn camera_column(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    preset: &Preset,
+    frame_state: Option<&FrameState>,
+    actions: &mut Vec<UiAction>,
+) {
+    // --- Position ---
+    let pos = &preset.camera.position;
+    let pos_keys: &[&str] = &[
+        "camera.position.orbitX", "camera.position.orbitY",
+        "camera.position.distance", "camera.position.targetX",
+        "camera.position.targetY", "camera.position.roll",
+    ];
+    let pos_any_on = pos.orbit_x.on || pos.orbit_y.on || pos.distance.on
+        || pos.target_x.on || pos.target_y.on || pos.roll.on;
+
+    if section_with_toggle(ui, "sec_position", "Position", true, pos_any_on, pos_keys, actions, Some(PresetKind::Camera)) {
+        compact_toggle_param_widget(ctx, ui, "orbit x", &pos.orbit_x, "camera.position.orbitX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "orbit y", &pos.orbit_y, "camera.position.orbitY", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "distance", &pos.distance, "camera.position.distance", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "target x", &pos.target_x, "camera.position.targetX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "target y", &pos.target_y, "camera.position.targetY", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "roll", &pos.roll, "camera.position.roll", frame_state, actions);
+    }
+
+    // --- Lens ---
+    let lens = &preset.camera.lens;
+    let lens_keys: &[&str] = &[
+        "camera.lens.focalLength", "camera.lens.sensorSize",
+        "camera.lens.orthoZoom", "camera.lens.anamorphic",
+        "camera.lens.shiftX", "camera.lens.shiftY",
+    ];
+    let lens_any_on = lens.focal_length.on || lens.sensor_size.on || lens.ortho_zoom.on
+        || lens.anamorphic.on || lens.shift_x.on || lens.shift_y.on;
+
+    if section_with_toggle(ui, "sec_lens", "Lens", true, lens_any_on, lens_keys, actions, Some(PresetKind::Camera)) {
+        ui.horizontal(|ui| {
+            let proj = preset.camera.lens.projection;
+            if ui.selectable_label(proj == ProjectionMode::Perspective, "Persp").clicked() && proj != ProjectionMode::Perspective {
+                actions.push(UiAction::SetProjection(ProjectionMode::Perspective));
+            }
+            if ui.selectable_label(proj == ProjectionMode::Orthographic, "Ortho").clicked() && proj != ProjectionMode::Orthographic {
+                actions.push(UiAction::SetProjection(ProjectionMode::Orthographic));
+            }
+        });
+        compact_toggle_param_widget(ctx, ui, "focal", &lens.focal_length, "camera.lens.focalLength", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "sensor", &lens.sensor_size, "camera.lens.sensorSize", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "ortho z", &lens.ortho_zoom, "camera.lens.orthoZoom", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "anamor", &lens.anamorphic, "camera.lens.anamorphic", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "shift x", &lens.shift_x, "camera.lens.shiftX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "shift y", &lens.shift_y, "camera.lens.shiftY", frame_state, actions);
+    }
+
+    // --- Distortion ---
+    let dist = &preset.camera.distortion;
+    let dist_keys: &[&str] = &[
+        "camera.distortion.k1", "camera.distortion.k2",
+        "camera.distortion.k3", "camera.distortion.k4",
+        "camera.distortion.p1", "camera.distortion.p2",
+        "camera.distortion.centerX", "camera.distortion.centerY",
+        "camera.distortion.squeeze",
+    ];
+    let dist_any_on = dist.k1.on || dist.k2.on || dist.k3.on || dist.k4.on
+        || dist.p1.on || dist.p2.on || dist.center_x.on || dist.center_y.on || dist.squeeze.on;
+
+    if section_with_toggle(ui, "sec_distortion", "Distortion", false, dist_any_on, dist_keys, actions, Some(PresetKind::Camera)) {
+        compact_toggle_param_widget(ctx, ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "k4", &dist.k4, "camera.distortion.k4", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "p1", &dist.p1, "camera.distortion.p1", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "p2", &dist.p2, "camera.distortion.p2", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "ctr x", &dist.center_x, "camera.distortion.centerX", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "ctr y", &dist.center_y, "camera.distortion.centerY", frame_state, actions);
+        compact_toggle_param_widget(ctx, ui, "squeeze", &dist.squeeze, "camera.distortion.squeeze", frame_state, actions);
+    }
+
+    // --- Quaternion (uses enable checkbox, not group toggle) ---
+    let q = &preset.quaternion;
+    {
+        let id = egui::Id::new("sec_quat");
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(), id, false,
+        );
+        let is_open = state.is_open();
+        ui.horizontal(|ui| {
+            let mut on = q.on;
+            if ui.checkbox(&mut on, "").changed() {
+                actions.push(UiAction::SetQuatOn(on));
+            }
+            let icon = if is_open { "\u{25BC}" } else { "\u{25B6}" };
+            if ui.small_button(icon).clicked() {
+                state.toggle(ui);
+            }
+            ui.strong("Quaternion");
+        });
+        if state.is_open() && q.on {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(q.mode == QuaternionMode::Fixed, "Fixed").clicked() {
+                    actions.push(UiAction::SetQuatMode(QuaternionMode::Fixed));
+                }
+                if ui.selectable_label(q.mode == QuaternionMode::Drift, "Drift").clicked() {
+                    actions.push(UiAction::SetQuatMode(QuaternionMode::Drift));
+                }
+            });
+            let swept_angle = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.angle"));
+            compact_param_widget(ctx, ui, "angle", &q.angle, ParamField::View("quaternion.angle".to_string()), swept_angle, actions);
+            if q.mode == QuaternionMode::Fixed {
+                let swept_ax = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ax"));
+                compact_param_widget(ctx, ui, "ax", &q.ax, ParamField::View("quaternion.ax".to_string()), swept_ax, actions);
+                let swept_ay = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ay"));
+                compact_param_widget(ctx, ui, "ay", &q.ay, ParamField::View("quaternion.ay".to_string()), swept_ay, actions);
+                let swept_az = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.az"));
+                compact_param_widget(ctx, ui, "az", &q.az, ParamField::View("quaternion.az".to_string()), swept_az, actions);
+            }
+            if q.mode == QuaternionMode::Drift {
+                ui.horizontal(|ui| {
+                    ui.label("drift:");
+                    let mut drift = q.drift_speed;
+                    if ui.add(egui::DragValue::new(&mut drift).speed(0.01).range(0.01..=2.0)).changed() {
+                        actions.push(UiAction::SetQuatDriftSpeed(drift));
+                    }
+                });
+            }
+        }
+        state.store(ui.ctx());
+    }
+}
+
+
+// =============================================================================
+// Compact layer row (collapsing)
+// =============================================================================
+
+fn compact_layer_row(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    layer: &polyform_core::layer::Layer,
+    idx: usize,
+    kind: PipelineKind,
+    layer_count: usize,
+    registry: &Registry,
+    frame_state: Option<&FrameState>,
+    actions: &mut Vec<UiAction>,
+) {
+    let def_label = match kind {
+        PipelineKind::Operations => registry.operations.get(layer.type_key.as_str()).map(|d| d.label),
+        PipelineKind::Lift => registry.lift.get(layer.type_key.as_str()).map(|d| d.label),
+    };
+    let display_label = def_label.unwrap_or(&layer.type_key);
+
+    // Get flat layer state for swept values
+    let flat_layer = frame_state.and_then(|fs| {
+        let flat_layers = match kind {
+            PipelineKind::Operations => &fs.operations,
+            PipelineKind::Lift => &fs.lifts,
+        };
+        flat_layers.get(idx)
+    });
+
+    // Header line: [enabled] > Name  [blend slider thin]
+    let collapsing_id = egui::Id::new(format!("layer_{:?}_{}", kind, layer.id));
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+        ui.ctx(),
+        collapsing_id,
+        false,
+    );
+
+    ui.horizontal(|ui| {
+        // Enable checkbox
+        let mut enabled = layer.enabled;
+        if ui.checkbox(&mut enabled, "").changed() {
+            actions.push(UiAction::SetLayerEnabled(kind, layer.id.clone(), enabled));
+        }
+
+        // Expand toggle
+        let icon = if state.is_open() { "\u{25BC}" } else { "\u{25B6}" };
+        if ui.small_button(icon).clicked() {
+            state.toggle(ui);
+        }
+
+        ui.label(display_label);
+
+        // Thin blend slider (no value, no label)
+        let visual_blend = flat_layer.map(|fl| fl.blend).unwrap_or(layer.blend.value);
+        let mut blend_val = visual_blend;
+        let response = ui.add(
+            egui::Slider::new(&mut blend_val, 0.0..=1.0)
+                .show_value(false)
+                .text("")
+        );
+        if response.changed() {
+            actions.push(UiAction::SetParam(
+                ParamField::LayerBlend { kind, layer_id: layer.id.clone() },
+                blend_val,
+            ));
+        }
+        // Grab events for blend slider
+        if layer.blend.anim {
+            if response.drag_started() {
+                actions.push(UiAction::ParamGrabStart(
+                    ParamField::LayerBlend { kind, layer_id: layer.id.clone() },
+                ));
+            }
+            if response.drag_stopped() {
+                actions.push(UiAction::ParamGrabEnd(
+                    ParamField::LayerBlend { kind, layer_id: layer.id.clone() },
+                ));
+            }
+        }
+    });
+
+    // Expanded content
+    state.show_body_unindented(ui, |ui| {
+        // Type combo
+        let type_entries: Vec<(&str, &str)> = match kind {
+            PipelineKind::Operations => {
+                let mut entries: Vec<_> = registry.operations.values()
+                    .map(|d| (d.key, d.label))
+                    .collect();
+                entries.sort_by_key(|e| e.0);
+                entries
+            }
+            PipelineKind::Lift => {
+                let mut entries: Vec<_> = registry.lift.values()
+                    .map(|d| (d.key, d.label))
+                    .collect();
+                entries.sort_by_key(|e| e.0);
+                entries
+            }
+        };
+
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            ui.label("Type:");
+            egui::ComboBox::from_id_salt(format!("type_{:?}_{}", kind, layer.id))
+                .selected_text(display_label)
+                .show_ui(ui, |ui| {
+                    for (key, lbl) in &type_entries {
+                        if ui.selectable_label(*key == layer.type_key.as_str(), *lbl).clicked() {
+                            actions.push(UiAction::ChangeLayerType(kind, idx, key.to_string()));
+                        }
+                    }
+                });
+        });
+
+        // Full blend param widget
+        let swept_blend = if layer.blend.anim {
+            flat_layer.map(|fl| fl.blend)
+        } else {
+            flat_layer.and_then(|fl| {
+                let diff = (fl.blend - layer.blend.value).abs();
+                if diff > 0.001 { Some(fl.blend) } else { None }
+            })
+        };
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            ui.scope(|ui| {
+                compact_param_widget(ctx, ui, "blend", &layer.blend,
+                    ParamField::LayerBlend { kind, layer_id: layer.id.clone() },
+                    swept_blend, actions);
+            });
+        });
+
+        // Per-param widgets
+        let param_order: Vec<&str> = match kind {
+            PipelineKind::Operations => registry.operations
+                .get(layer.type_key.as_str())
+                .map(|d| d.params.iter().map(|p| p.key).collect())
+                .unwrap_or_default(),
+            PipelineKind::Lift => registry.lift
+                .get(layer.type_key.as_str())
+                .map(|d| d.params.iter().map(|p| p.key).collect())
+                .unwrap_or_default(),
+        };
+
+        for key in param_order {
+            if let Some(param) = layer.params.get(key) {
+                let swept_value = if param.anim {
+                    flat_layer.and_then(|fl| fl.params.get(key).copied())
+                } else {
+                    None
+                };
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.scope(|ui| {
+                        compact_param_widget(ctx, ui, key, param,
+                            ParamField::LayerParam {
+                                kind,
+                                layer_id: layer.id.clone(),
+                                key: key.to_string(),
+                            },
+                            swept_value, actions);
+                    });
+                });
+            }
+        }
+
+        // Move / Remove buttons
+        ui.horizontal(|ui| {
+            ui.add_space(20.0);
+            if idx > 0 && ui.small_button("\u{2191}").clicked() {
+                actions.push(UiAction::MoveLayer(kind, idx, -1));
+            }
+            if idx < layer_count - 1 && ui.small_button("\u{2193}").clicked() {
+                actions.push(UiAction::MoveLayer(kind, idx, 1));
+            }
+            if ui.small_button("Remove").clicked() {
+                actions.push(UiAction::RemoveLayer(kind, idx));
+            }
+        });
+    });
+
+    // Store state
+    state.store(ui.ctx());
+}
+
+// =============================================================================
+// Compact param widget (one line + popup)
+// =============================================================================
+
+fn compact_param_widget(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    label: &str,
+    param: &Param,
+    field: ParamField,
+    swept_value: Option<f64>,
+    actions: &mut Vec<UiAction>,
+) {
+    let display_value = swept_value.unwrap_or(param.value);
+    let mut value = display_value;
+    let slider_label = if swept_value.is_some() {
+        format!("{}~", label)
+    } else {
+        label.to_string()
+    };
+
+    ui.horizontal(|ui| {
+        let response = ui.add(
+            egui::Slider::new(&mut value, param.min..=param.max)
+                .text(&slider_label)
+                .clamping(egui::SliderClamping::Never)
+        );
+        if response.changed() {
+            actions.push(UiAction::SetParam(field.clone(), value));
+        }
+        if param.anim {
+            if response.drag_started() {
+                actions.push(UiAction::ParamGrabStart(field.clone()));
+            }
+            if response.drag_stopped() {
+                actions.push(UiAction::ParamGrabEnd(field.clone()));
+            }
+        }
+
+        // Anim checkbox (unlabeled)
+        let mut anim = param.anim;
+        if ui.checkbox(&mut anim, "").changed() {
+            actions.push(UiAction::SetParamAnim(field.clone(), anim));
+        }
+
+        // Ratio badge when animating
+        if param.anim {
+            ui.label(egui::RichText::new(format!("r:{:.2}", param.ratio)).weak().size(10.0));
+        }
+
+        // Popup button
+        let popup_id = format!("popup_{}_{:?}", label, field_id_hint(&field));
+        if ui.small_button("...").clicked() {
+            toggle_popup(ctx, &popup_id);
+        }
+
+        // Render popup window
+        if is_popup_open(ctx, &popup_id) {
+            render_param_popup(ctx, &popup_id, label, param, &field, actions);
+        }
+    });
+}
+
+// =============================================================================
+// Compact toggle param widget (one line + popup)
+// =============================================================================
+
+fn compact_toggle_param_widget(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    label: &str,
+    tp: &ToggleParam,
+    view_key: &str,
+    frame_state: Option<&FrameState>,
+    actions: &mut Vec<UiAction>,
+) {
+    let swept_value = if tp.on && tp.param.anim {
+        frame_state.and_then(|fs| frame_state_view_value(fs, view_key))
+    } else {
+        None
+    };
+
+    let display_value = swept_value.unwrap_or(tp.param.value);
+    let mut value = display_value;
+    let slider_label = if swept_value.is_some() {
+        format!("{}~", label)
+    } else {
+        label.to_string()
+    };
+
+    let field = ParamField::View(view_key.to_string());
+
+    ui.horizontal(|ui| {
+        // On checkbox
+        let mut on = tp.on;
+        if ui.checkbox(&mut on, "").changed() {
+            actions.push(UiAction::SetToggleParamOn(view_key.to_string(), on));
+        }
+
+        let response = ui.add(
+            egui::Slider::new(&mut value, tp.param.min..=tp.param.max)
+                .text(&slider_label)
+                .clamping(egui::SliderClamping::Never)
+        );
+        if response.changed() {
+            actions.push(UiAction::SetParam(field.clone(), value));
+        }
+        if tp.param.anim {
+            if response.drag_started() {
+                actions.push(UiAction::ParamGrabStart(field.clone()));
+            }
+            if response.drag_stopped() {
+                actions.push(UiAction::ParamGrabEnd(field.clone()));
+            }
+        }
+
+        // Anim checkbox (unlabeled)
+        let mut anim = tp.param.anim;
+        if ui.checkbox(&mut anim, "").changed() {
+            actions.push(UiAction::SetParamAnim(field.clone(), anim));
+        }
+
+        // Ratio badge
+        if tp.param.anim {
+            ui.label(egui::RichText::new(format!("r:{:.2}", tp.param.ratio)).weak().size(10.0));
+        }
+
+        // Popup button
+        let popup_id = format!("popup_{}", view_key);
+        if ui.small_button("...").clicked() {
+            toggle_popup(ctx, &popup_id);
+        }
+
+        if is_popup_open(ctx, &popup_id) {
+            render_param_popup(ctx, &popup_id, label, &tp.param, &field, actions);
+        }
+    });
+}
+
+// =============================================================================
+// Param popup window (animation detail)
+// =============================================================================
+
+fn render_param_popup(
+    ctx: &egui::Context,
+    popup_id: &str,
+    label: &str,
+    param: &Param,
+    field: &ParamField,
+    actions: &mut Vec<UiAction>,
+) {
+    let mut open = true;
+    egui::Window::new(format!("{} detail", label))
+        .id(egui::Id::new(popup_id))
+        .open(&mut open)
+        .resizable(false)
+        .default_width(300.0)
+        .show(ctx, |ui| {
+            // Shape selector
+            ui.horizontal(|ui| {
+                ui.label("Shape:");
+                let is_sawtooth = param.shape == ShapeFunction::Sawtooth;
+                if ui.selectable_label(is_sawtooth, "saw").clicked() && !is_sawtooth {
+                    actions.push(UiAction::SetParamShape(field.clone(), ShapeFunction::Sawtooth));
+                }
+                if ui.selectable_label(!is_sawtooth, "cos").clicked() && is_sawtooth {
+                    actions.push(UiAction::SetParamShape(field.clone(), ShapeFunction::Cosine));
+                }
+            });
+
+            // Ratio
+            ui.horizontal(|ui| {
+                ui.label("Ratio:");
+                ratio_widget(ui, param.ratio, field, &format!("popup_ratio_{}", popup_id), actions);
+            });
+
+            // Min/max
+            min_max_widget(ui, param, field, actions);
+
+            // Offset + modulator
+            offset_and_modulator_controls(ui, param, field, popup_id, actions);
+        });
+
+    if !open {
+        close_popup(ctx, popup_id);
+    }
+}
+
+// =============================================================================
+// Helper: field identity hint for popup IDs
+// =============================================================================
+
+fn field_id_hint(field: &ParamField) -> String {
+    match field {
+        ParamField::LayerParam { kind, layer_id, key } => format!("{:?}_{}_{}",kind, layer_id, key),
+        ParamField::LayerBlend { kind, layer_id } => format!("{:?}_{}_blend", kind, layer_id),
+        ParamField::Tempo => "tempo".to_string(),
+        ParamField::View(vk) => vk.clone(),
+    }
+}
+
+
+
+// =============================================================================
+// Add layer button (categorized menu)
+// =============================================================================
 
 fn add_layer_button(
     ui: &mut egui::Ui,
@@ -684,7 +1576,6 @@ fn add_layer_button(
     registry: &Registry,
     actions: &mut Vec<UiAction>,
 ) {
-    // Group entries by category
     let entries: Vec<(&str, &str, &str)> = match kind {
         PipelineKind::Operations => {
             let mut v: Vec<_> = registry.operations.values()
@@ -721,7 +1612,7 @@ fn add_layer_button(
 }
 
 // =============================================================================
-// Ratio picker widget
+// Ratio picker widget (reused in popup)
 // =============================================================================
 
 fn ratio_widget(
@@ -761,10 +1652,9 @@ fn ratio_widget(
 }
 
 // =============================================================================
-// Modulator ratio widget
+// Modulator ratio widget (reused in popup)
 // =============================================================================
 
-/// Ratio widget that emits SetModulatorRatio instead of SetParamRatio.
 fn modulator_ratio_widget(
     ui: &mut egui::Ui,
     ratio: f64,
@@ -802,7 +1692,7 @@ fn modulator_ratio_widget(
 }
 
 // =============================================================================
-// Min/max editing
+// Min/max editing (reused in popup)
 // =============================================================================
 
 fn min_max_widget(
@@ -812,7 +1702,6 @@ fn min_max_widget(
     actions: &mut Vec<UiAction>,
 ) {
     ui.horizontal(|ui| {
-        ui.add_space(16.0);
         ui.label("min:");
         let mut min_val = param.min;
         if ui.add(egui::DragValue::new(&mut min_val).speed(0.01)).changed() {
@@ -827,147 +1716,9 @@ fn min_max_widget(
 }
 
 // =============================================================================
-// Param widget
+// Offset and modulator controls (reused in popup)
 // =============================================================================
 
-fn param_widget(
-    ui: &mut egui::Ui,
-    label: &str,
-    param: &Param,
-    field: ParamField,
-    swept_value: Option<f64>,
-    actions: &mut Vec<UiAction>,
-) {
-    // Show swept value on slider when animating, but drag still sets param.value
-    let display_value = swept_value.unwrap_or(param.value);
-    let mut value = display_value;
-    let slider_label = if swept_value.is_some() {
-        format!("{} ~", label)
-    } else {
-        label.to_string()
-    };
-    let response = ui.add(egui::Slider::new(&mut value, param.min..=param.max).text(&slider_label));
-    if response.changed() {
-        actions.push(UiAction::SetParam(field.clone(), value));
-    }
-    if param.anim {
-        if response.drag_started() {
-            actions.push(UiAction::ParamGrabStart(field.clone()));
-        }
-        if response.drag_stopped() {
-            actions.push(UiAction::ParamGrabEnd(field.clone()));
-        }
-    }
-
-    // Anim controls on a second row (compact)
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        let mut anim = param.anim;
-        if ui.checkbox(&mut anim, "anim").changed() {
-            actions.push(UiAction::SetParamAnim(field.clone(), anim));
-        }
-        if param.anim {
-            // Shape selector: sawtooth vs cosine
-            let is_sawtooth = param.shape == ShapeFunction::Sawtooth;
-            if ui.selectable_label(is_sawtooth, "saw").clicked() && !is_sawtooth {
-                actions.push(UiAction::SetParamShape(field.clone(), ShapeFunction::Sawtooth));
-            }
-            if ui.selectable_label(!is_sawtooth, "cos").clicked() && is_sawtooth {
-                actions.push(UiAction::SetParamShape(field.clone(), ShapeFunction::Cosine));
-            }
-            ratio_widget(ui, param.ratio, &field, &format!("ratio_{}", label), actions);
-        }
-    });
-
-    // Min/max, offset, and modulator when animated
-    if param.anim {
-        min_max_widget(ui, param, &field, actions);
-        offset_and_modulator_controls(ui, param, &field, label, actions);
-    }
-}
-
-// =============================================================================
-// Toggle param widget (camera / sampling params)
-// =============================================================================
-
-fn toggle_param_widget(
-    ui: &mut egui::Ui,
-    label: &str,
-    tp: &ToggleParam,
-    view_key: &str,
-    frame_state: Option<&FrameState>,
-    actions: &mut Vec<UiAction>,
-) {
-    // Look up swept value from frame state if param is on and animating
-    let swept_value = if tp.on && tp.param.anim {
-        frame_state.and_then(|fs| frame_state_view_value(fs, view_key))
-    } else {
-        None
-    };
-
-    ui.horizontal(|ui| {
-        let mut on = tp.on;
-        if ui.checkbox(&mut on, "").changed() {
-            actions.push(UiAction::SetToggleParamOn(view_key.to_string(), on));
-        }
-
-        let display_value = swept_value.unwrap_or(tp.param.value);
-        let mut value = display_value;
-        let slider_label = if swept_value.is_some() {
-            format!("{} ~", label)
-        } else {
-            label.to_string()
-        };
-        let slider = egui::Slider::new(&mut value, tp.param.min..=tp.param.max)
-            .text(&slider_label)
-            .clamping(egui::SliderClamping::Never);
-        let response = ui.add(slider);
-        if response.changed() {
-            actions.push(UiAction::SetParam(
-                ParamField::View(view_key.to_string()),
-                value,
-            ));
-        }
-        if tp.param.anim {
-            let grab_field = ParamField::View(view_key.to_string());
-            if response.drag_started() {
-                actions.push(UiAction::ParamGrabStart(grab_field.clone()));
-            }
-            if response.drag_stopped() {
-                actions.push(UiAction::ParamGrabEnd(grab_field));
-            }
-        }
-    });
-
-    let field = ParamField::View(view_key.to_string());
-
-    ui.horizontal(|ui| {
-        ui.add_space(32.0);
-        let mut anim = tp.param.anim;
-        if ui.checkbox(&mut anim, "anim").changed() {
-            actions.push(UiAction::SetParamAnim(field.clone(), anim));
-        }
-        if tp.param.anim {
-            // Shape selector: sawtooth vs cosine
-            let is_sawtooth = tp.param.shape == ShapeFunction::Sawtooth;
-            if ui.selectable_label(is_sawtooth, "saw").clicked() && !is_sawtooth {
-                actions.push(UiAction::SetParamShape(field.clone(), ShapeFunction::Sawtooth));
-            }
-            if ui.selectable_label(!is_sawtooth, "cos").clicked() && is_sawtooth {
-                actions.push(UiAction::SetParamShape(field.clone(), ShapeFunction::Cosine));
-            }
-            ratio_widget(ui, tp.param.ratio, &field, &format!("ratio_{}", view_key), actions);
-        }
-    });
-
-    // Min/max, offset, and modulator when animated
-    if tp.param.anim {
-        min_max_widget(ui, &tp.param, &field, actions);
-        offset_and_modulator_controls(ui, &tp.param, &field, view_key, actions);
-    }
-}
-
-/// Offset and modulator controls — shared between param_widget and toggle_param_widget.
 fn offset_and_modulator_controls(
     ui: &mut egui::Ui,
     param: &Param,
@@ -977,7 +1728,6 @@ fn offset_and_modulator_controls(
 ) {
     // Phase offset slider
     ui.horizontal(|ui| {
-        ui.add_space(16.0);
         ui.label("offset:");
         let mut val = param.offset;
         if ui.add(egui::Slider::new(&mut val, 0.0..=1.0).show_value(true)).changed() {
@@ -991,7 +1741,6 @@ fn offset_and_modulator_controls(
     let mod_shape = param.modulator.as_ref().map_or(ShapeFunction::Cosine, |m| m.shape);
 
     ui.horizontal(|ui| {
-        ui.add_space(16.0);
         ui.label("FM depth:");
         let mut depth = mod_depth;
         if ui.add(egui::Slider::new(&mut depth, 0.0..=1.0).show_value(true)).changed() {
@@ -1001,8 +1750,6 @@ fn offset_and_modulator_controls(
 
     if mod_depth.abs() > 1e-6 {
         ui.horizontal(|ui| {
-            ui.add_space(16.0);
-            // Modulator shape selector
             let is_sawtooth = mod_shape == ShapeFunction::Sawtooth;
             ui.label("FM:");
             if ui.selectable_label(is_sawtooth, "saw").clicked() && !is_sawtooth {
@@ -1015,6 +1762,10 @@ fn offset_and_modulator_controls(
         });
     }
 }
+
+// =============================================================================
+// Frame state view value lookup
+// =============================================================================
 
 /// Map view keys to FrameState fields for swept value display.
 pub fn frame_state_view_value(fs: &FrameState, view_key: &str) -> Option<f64> {
@@ -1060,363 +1811,3 @@ pub fn frame_state_view_value(fs: &FrameState, view_key: &str) -> Option<f64> {
     }
 }
 
-// =============================================================================
-// Camera sections
-// =============================================================================
-
-fn camera_position_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    let pos = &preset.camera.position;
-    let all_keys: &[&str] = &[
-        "camera.position.orbitX", "camera.position.orbitY",
-        "camera.position.distance", "camera.position.targetX",
-        "camera.position.targetY", "camera.position.roll",
-    ];
-    let any_on = pos.orbit_x.on || pos.orbit_y.on || pos.distance.on
-        || pos.target_x.on || pos.target_y.on || pos.roll.on;
-
-    ui.horizontal(|ui| {
-        let mut group_on = any_on;
-        if ui.checkbox(&mut group_on, "").changed() {
-            for key in all_keys {
-                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
-            }
-        }
-    });
-
-    egui::CollapsingHeader::new("Camera > Position")
-        .default_open(false)
-        .show(ui, |ui| {
-            toggle_param_widget(ui, "orbit x", &pos.orbit_x, "camera.position.orbitX", frame_state, actions);
-            toggle_param_widget(ui, "orbit y", &pos.orbit_y, "camera.position.orbitY", frame_state, actions);
-            toggle_param_widget(ui, "distance", &pos.distance, "camera.position.distance", frame_state, actions);
-            toggle_param_widget(ui, "target x", &pos.target_x, "camera.position.targetX", frame_state, actions);
-            toggle_param_widget(ui, "target y", &pos.target_y, "camera.position.targetY", frame_state, actions);
-            toggle_param_widget(ui, "roll", &pos.roll, "camera.position.roll", frame_state, actions);
-        });
-}
-
-fn camera_lens_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    let lens = &preset.camera.lens;
-    let all_keys: &[&str] = &[
-        "camera.lens.focalLength", "camera.lens.sensorSize",
-        "camera.lens.orthoZoom", "camera.lens.anamorphic",
-        "camera.lens.shiftX", "camera.lens.shiftY",
-    ];
-    let any_on = lens.focal_length.on || lens.sensor_size.on || lens.ortho_zoom.on
-        || lens.anamorphic.on || lens.shift_x.on || lens.shift_y.on;
-
-    ui.horizontal(|ui| {
-        let mut group_on = any_on;
-        if ui.checkbox(&mut group_on, "").changed() {
-            for key in all_keys {
-                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
-            }
-        }
-    });
-
-    egui::CollapsingHeader::new("Camera > Lens")
-        .default_open(false)
-        .show(ui, |ui| {
-            // Projection mode
-            ui.horizontal(|ui| {
-                ui.label("Projection:");
-                let mut proj = preset.camera.lens.projection;
-                if ui.selectable_label(proj == ProjectionMode::Perspective, "Perspective").clicked() {
-                    proj = ProjectionMode::Perspective;
-                    actions.push(UiAction::SetProjection(proj));
-                }
-                if ui.selectable_label(proj == ProjectionMode::Orthographic, "Orthographic").clicked() {
-                    proj = ProjectionMode::Orthographic;
-                    actions.push(UiAction::SetProjection(proj));
-                }
-            });
-
-            toggle_param_widget(ui, "focal length", &lens.focal_length, "camera.lens.focalLength", frame_state, actions);
-            toggle_param_widget(ui, "sensor size", &lens.sensor_size, "camera.lens.sensorSize", frame_state, actions);
-            toggle_param_widget(ui, "ortho zoom", &lens.ortho_zoom, "camera.lens.orthoZoom", frame_state, actions);
-            toggle_param_widget(ui, "anamorphic", &lens.anamorphic, "camera.lens.anamorphic", frame_state, actions);
-            toggle_param_widget(ui, "shift x", &lens.shift_x, "camera.lens.shiftX", frame_state, actions);
-            toggle_param_widget(ui, "shift y", &lens.shift_y, "camera.lens.shiftY", frame_state, actions);
-        });
-}
-
-fn camera_distortion_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    let dist = &preset.camera.distortion;
-    let all_keys: &[&str] = &[
-        "camera.distortion.k1", "camera.distortion.k2",
-        "camera.distortion.k3", "camera.distortion.k4",
-        "camera.distortion.p1", "camera.distortion.p2",
-        "camera.distortion.centerX", "camera.distortion.centerY",
-        "camera.distortion.squeeze",
-    ];
-    let any_on = dist.k1.on || dist.k2.on || dist.k3.on || dist.k4.on
-        || dist.p1.on || dist.p2.on || dist.center_x.on || dist.center_y.on || dist.squeeze.on;
-
-    // Header with group toggle visible even when collapsed
-    ui.horizontal(|ui| {
-        let mut group_on = any_on;
-        if ui.checkbox(&mut group_on, "").changed() {
-            for key in all_keys {
-                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
-            }
-        }
-    });
-
-    egui::CollapsingHeader::new("Camera > Distortion")
-        .default_open(false)
-        .show(ui, |ui| {
-            toggle_param_widget(ui, "k1", &dist.k1, "camera.distortion.k1", frame_state, actions);
-            toggle_param_widget(ui, "k2", &dist.k2, "camera.distortion.k2", frame_state, actions);
-            toggle_param_widget(ui, "k3", &dist.k3, "camera.distortion.k3", frame_state, actions);
-            toggle_param_widget(ui, "k4", &dist.k4, "camera.distortion.k4", frame_state, actions);
-            toggle_param_widget(ui, "p1", &dist.p1, "camera.distortion.p1", frame_state, actions);
-            toggle_param_widget(ui, "p2", &dist.p2, "camera.distortion.p2", frame_state, actions);
-            toggle_param_widget(ui, "center x", &dist.center_x, "camera.distortion.centerX", frame_state, actions);
-            toggle_param_widget(ui, "center y", &dist.center_y, "camera.distortion.centerY", frame_state, actions);
-            toggle_param_widget(ui, "squeeze", &dist.squeeze, "camera.distortion.squeeze", frame_state, actions);
-        });
-}
-
-// =============================================================================
-// Quaternion section
-// =============================================================================
-
-fn quaternion_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    egui::CollapsingHeader::new("Quaternion")
-        .default_open(false)
-        .show(ui, |ui| {
-            let q = &preset.quaternion;
-
-            let mut on = q.on;
-            if ui.checkbox(&mut on, "Enable quaternion").changed() {
-                actions.push(UiAction::SetQuatOn(on));
-            }
-
-            if q.on {
-                // Mode
-                ui.horizontal(|ui| {
-                    ui.label("Mode:");
-                    if ui.selectable_label(q.mode == QuaternionMode::Fixed, "Fixed").clicked() {
-                        actions.push(UiAction::SetQuatMode(QuaternionMode::Fixed));
-                    }
-                    if ui.selectable_label(q.mode == QuaternionMode::Drift, "Drift").clicked() {
-                        actions.push(UiAction::SetQuatMode(QuaternionMode::Drift));
-                    }
-                });
-
-                // Angle — full param widget
-                let swept_angle = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.angle"));
-                param_widget(
-                    ui,
-                    "angle",
-                    &q.angle,
-                    ParamField::View("quaternion.angle".to_string()),
-                    swept_angle,
-                    actions,
-                );
-
-                // Axes — full param widgets (only in Fixed mode)
-                if q.mode == QuaternionMode::Fixed {
-                    let swept_ax = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ax"));
-                    param_widget(
-                        ui,
-                        "ax",
-                        &q.ax,
-                        ParamField::View("quaternion.ax".to_string()),
-                        swept_ax,
-                        actions,
-                    );
-                    let swept_ay = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.ay"));
-                    param_widget(
-                        ui,
-                        "ay",
-                        &q.ay,
-                        ParamField::View("quaternion.ay".to_string()),
-                        swept_ay,
-                        actions,
-                    );
-                    let swept_az = frame_state.and_then(|fs| frame_state_view_value(fs, "quaternion.az"));
-                    param_widget(
-                        ui,
-                        "az",
-                        &q.az,
-                        ParamField::View("quaternion.az".to_string()),
-                        swept_az,
-                        actions,
-                    );
-                }
-
-                if q.mode == QuaternionMode::Drift {
-                    let mut drift = q.drift_speed;
-                    if ui.add(egui::Slider::new(&mut drift, 0.01..=2.0).text("drift speed")).changed() {
-                        actions.push(UiAction::SetQuatDriftSpeed(drift));
-                    }
-                }
-            }
-        });
-}
-
-// =============================================================================
-// Sampling section
-// =============================================================================
-
-fn sampling_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    toggle_param_widget(ui, "lattice scale", &preset.sampling.scale, "sampling.scale", frame_state, actions);
-    toggle_param_widget(ui, "lattice density", &preset.sampling.density, "sampling.density", frame_state, actions);
-
-    // Lattice type selector
-    ui.horizontal(|ui| {
-        ui.label("Lattice:");
-        let lt = preset.sampling.lattice_type;
-        for &(label, ty) in &[
-            ("Cartesian", LatticeType::Cartesian),
-            ("Polar", LatticeType::Polar),
-            ("Hex", LatticeType::Hex),
-            ("LogPolar", LatticeType::LogPolar),
-            ("Bipolar", LatticeType::Bipolar),
-        ] {
-            if ui.selectable_label(lt == ty, label).clicked() && lt != ty {
-                actions.push(UiAction::SetLatticeType(ty));
-            }
-        }
-    });
-
-    // Per-type controls
-    let lp = &preset.sampling.lattice_params;
-    match preset.sampling.lattice_type {
-        LatticeType::Polar => {
-            ui.horizontal(|ui| {
-                ui.label("spokes:");
-                let mut v = lp.spoke_count as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
-                    actions.push(UiAction::SetLatticeSpokeCount(v as u32));
-                }
-            });
-        }
-        LatticeType::LogPolar => {
-            ui.horizontal(|ui| {
-                ui.label("spokes:");
-                let mut v = lp.spoke_count as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
-                    actions.push(UiAction::SetLatticeSpokeCount(v as u32));
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("inner radius:");
-                let mut v = lp.inner_radius;
-                if ui.add(egui::DragValue::new(&mut v).speed(0.005).range(0.01..=0.5)).changed() {
-                    actions.push(UiAction::SetLatticeInnerRadius(v));
-                }
-            });
-        }
-        LatticeType::Bipolar => {
-            ui.horizontal(|ui| {
-                ui.label("focus distance:");
-                let mut v = lp.focus_distance;
-                if ui.add(egui::DragValue::new(&mut v).speed(0.01).range(0.1..=3.0)).changed() {
-                    actions.push(UiAction::SetLatticeFocusDistance(v));
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label("tau curves:");
-                let mut v = lp.tau_count as i32;
-                if ui.add(egui::DragValue::new(&mut v).speed(1).range(4..=80)).changed() {
-                    actions.push(UiAction::SetLatticeTauCount(v as u32));
-                }
-            });
-        }
-        LatticeType::Cartesian | LatticeType::Hex => {}
-    }
-}
-
-// =============================================================================
-// Phosphor section
-// =============================================================================
-
-fn phosphor_section(ui: &mut egui::Ui, preset: &Preset, frame_state: Option<&FrameState>, actions: &mut Vec<UiAction>) {
-    let ph = &preset.phosphor;
-    let all_keys: &[&str] = &[
-        "phosphor.persistence", "phosphor.beamWidth", "phosphor.beamIntensity",
-        "phosphor.gain", "phosphor.blendMix", "phosphor.saturation",
-        "phosphor.bloomIntensity", "phosphor.bloomRadius", "phosphor.bloomThreshold",
-        "phosphor.gamma",
-    ];
-    let any_on = ph.persistence.on || ph.beam_width.on || ph.beam_intensity.on
-        || ph.gain.on || ph.blend_mix.on || ph.saturation.on
-        || ph.bloom_intensity.on || ph.bloom_radius.on || ph.bloom_threshold.on
-        || ph.gamma.on;
-
-    // Header with group toggle
-    ui.horizontal(|ui| {
-        let mut group_on = any_on;
-        if ui.checkbox(&mut group_on, "").changed() {
-            for key in all_keys {
-                actions.push(UiAction::SetToggleParamOn(key.to_string(), group_on));
-            }
-        }
-    });
-
-    egui::CollapsingHeader::new("Phosphor")
-        .default_open(false)
-        .show(ui, |ui| {
-            toggle_param_widget(ui, "persistence", &ph.persistence, "phosphor.persistence", frame_state, actions);
-            toggle_param_widget(ui, "beam width", &ph.beam_width, "phosphor.beamWidth", frame_state, actions);
-            toggle_param_widget(ui, "beam drive", &ph.beam_intensity, "phosphor.beamIntensity", frame_state, actions);
-            toggle_param_widget(ui, "gain", &ph.gain, "phosphor.gain", frame_state, actions);
-            toggle_param_widget(ui, "blend mix", &ph.blend_mix, "phosphor.blendMix", frame_state, actions);
-            toggle_param_widget(ui, "saturation", &ph.saturation, "phosphor.saturation", frame_state, actions);
-            toggle_param_widget(ui, "bloom", &ph.bloom_intensity, "phosphor.bloomIntensity", frame_state, actions);
-            toggle_param_widget(ui, "bloom radius", &ph.bloom_radius, "phosphor.bloomRadius", frame_state, actions);
-            toggle_param_widget(ui, "bloom thresh", &ph.bloom_threshold, "phosphor.bloomThreshold", frame_state, actions);
-            toggle_param_widget(ui, "gamma", &ph.gamma, "phosphor.gamma", frame_state, actions);
-        });
-}
-
-// =============================================================================
-// Viewport section
-// =============================================================================
-
-fn viewport_section(ui: &mut egui::Ui, overlay: &mut OverlayState, actions: &mut Vec<UiAction>) {
-    ui.horizontal(|ui| {
-        ui.label("Viewport:");
-
-        let mut w = overlay.viewport_width as i32;
-        let mut h = overlay.viewport_height as i32;
-
-        let w_changed = ui.add(
-            egui::DragValue::new(&mut w)
-                .speed(1)
-                .range(320..=7680),
-        ).changed();
-
-        ui.label("\u{00d7}");
-
-        let h_changed = ui.add(
-            egui::DragValue::new(&mut h)
-                .speed(1)
-                .range(320..=7680),
-        ).changed();
-
-        if w_changed || h_changed {
-            overlay.viewport_width = w as u32;
-            overlay.viewport_height = h as u32;
-            actions.push(UiAction::SetViewportSize(w as u32, h as u32));
-        }
-
-        if ui.small_button("HD").clicked() {
-            overlay.viewport_width = 1920;
-            overlay.viewport_height = 1080;
-            actions.push(UiAction::SetViewportSize(1920, 1080));
-        }
-        if ui.small_button("2K").clicked() {
-            overlay.viewport_width = 2560;
-            overlay.viewport_height = 1440;
-            actions.push(UiAction::SetViewportSize(2560, 1440));
-        }
-        if ui.small_button("4K").clicked() {
-            overlay.viewport_width = 3840;
-            overlay.viewport_height = 2160;
-            actions.push(UiAction::SetViewportSize(3840, 2160));
-        }
-    });
-}

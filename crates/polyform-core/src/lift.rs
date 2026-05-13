@@ -67,8 +67,20 @@ pub fn z_gaussian(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, 
     (0.0, 0.0, amp * (-(x * x + y * y) / (sigma * sigma)).exp())
 }
 
+pub fn z_saddle(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, _j: f64) -> (f64, f64, f64) {
+    let amp = p.get("amp").copied().unwrap_or(0.5);
+    (0.0, 0.0, amp * x * y)
+}
+
+pub fn z_terrace(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, _j: f64) -> (f64, f64, f64) {
+    let amp = p.get("amp").copied().unwrap_or(0.5);
+    let steps = p.get("steps").copied().unwrap_or(5.0);
+    let r = x.hypot(y);
+    (0.0, 0.0, amp * (r * steps).floor() / steps)
+}
+
 // =============================================================================
-// 3D displacement (full vector) — 5
+// 3D displacement (full vector) — 6
 // =============================================================================
 
 pub fn spherical(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, _j: f64) -> (f64, f64, f64) {
@@ -104,6 +116,18 @@ pub fn noise_3d(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, _j
     let ny = (freq * y + 2.7 * seed).sin() * (freq * x * 1.3 + 0.7).cos();
     let nz = (freq * (x + y) + 0.5 * seed).sin() * (freq * (x - y) * 1.1).cos();
     (amp * nx, amp * ny, amp * nz)
+}
+
+pub fn toroidal(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, _j: f64) -> (f64, f64, f64) {
+    let major = p.get("major").copied().unwrap_or(1.5);
+    let minor = p.get("minor").copied().unwrap_or(0.5);
+    // Map (x,y) to torus angles: u = x, v = y
+    let u = x;
+    let v = y;
+    let tx = (major + minor * v.cos()) * u.cos();
+    let tz = (major + minor * v.cos()) * u.sin();
+    let ty = minor * v.sin();
+    (tx - x, ty, tz - y)
 }
 
 pub fn ripple_3d(x: f64, y: f64, p: &HashMap<String, f64>, _x0: f64, _y0: f64, _j: f64) -> (f64, f64, f64) {
@@ -225,6 +249,41 @@ mod tests {
     fn test_spherical_origin() {
         let (dx, dy, dz) = spherical(0.0, 0.0, &params(&[("r", 1.0)]), 0.0, 0.0, 0.0);
         assert_near(dx, 0.0, 1e-10);
+        assert_near(dy, 0.0, 1e-10);
+        assert_near(dz, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_z_saddle_origin() {
+        let (_, _, dz) = z_saddle(0.0, 0.0, &params(&[("amp", 1.0)]), 0.0, 0.0, 0.0);
+        assert_near(dz, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_z_saddle_product() {
+        let (_, _, dz) = z_saddle(2.0, 3.0, &params(&[("amp", 0.5)]), 0.0, 0.0, 0.0);
+        assert_near(dz, 3.0, 1e-10);
+    }
+
+    #[test]
+    fn test_z_terrace_origin() {
+        let (_, _, dz) = z_terrace(0.0, 0.0, &params(&[("amp", 1.0), ("steps", 5.0)]), 0.0, 0.0, 0.0);
+        assert_near(dz, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_z_terrace_step() {
+        // r=1.0, steps=4 => floor(1.0*4)/4 = 4/4 = 1.0, amp=0.5 => 0.5
+        let (_, _, dz) = z_terrace(1.0, 0.0, &params(&[("amp", 0.5), ("steps", 4.0)]), 0.0, 0.0, 0.0);
+        assert_near(dz, 0.5, 1e-10);
+    }
+
+    #[test]
+    fn test_toroidal_origin() {
+        // At (0,0): tx = (major+minor*cos(0))*cos(0) = major+minor, ty = minor*sin(0) = 0, tz = 0
+        let (dx, dy, dz) = toroidal(0.0, 0.0, &params(&[("major", 1.5), ("minor", 0.5)]), 0.0, 0.0, 0.0);
+        // tx - x = 2.0 - 0.0 = 2.0, ty = 0, tz - y = 0
+        assert_near(dx, 2.0, 1e-10);
         assert_near(dy, 0.0, 1e-10);
         assert_near(dz, 0.0, 1e-10);
     }

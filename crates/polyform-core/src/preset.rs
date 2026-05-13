@@ -3,9 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::layer::Layer;
 use crate::types::{LatticeType, Param, ProjectionMode, QuaternionMode, ToggleParam, PHI};
 
-pub const SCHEMA_NAME: &str = "polyform.preset";
-pub const SCHEMA_VERSION: u32 = 1;
-
 // =============================================================================
 // Metadata
 // =============================================================================
@@ -45,27 +42,6 @@ impl Default for Metadata {
 }
 
 // =============================================================================
-// Defaults
-// =============================================================================
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Defaults {
-    #[serde(default = "default_blend_time")]
-    pub blend_time: f64,
-}
-
-fn default_blend_time() -> f64 {
-    1.0
-}
-
-impl Default for Defaults {
-    fn default() -> Self {
-        Self { blend_time: 1.0 }
-    }
-}
-
-// =============================================================================
 // Pipeline
 // =============================================================================
 
@@ -100,7 +76,7 @@ impl Default for CameraPosition {
             orbit_y: ToggleParam::new(
                 true,
                 0.1,
-                0.1,
+                0.0,
                 std::f64::consts::PI - 0.1,
                 true,
             )
@@ -327,71 +303,6 @@ impl Default for Sampling {
 }
 
 // =============================================================================
-// Display toggles
-// =============================================================================
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Display {
-    #[serde(default = "default_true")]
-    pub show_formula: bool,
-    #[serde(default = "default_true")]
-    pub show_dim_count: bool,
-    #[serde(default = "default_true")]
-    pub show_active_layers: bool,
-    #[serde(default = "default_true")]
-    pub show_param_values: bool,
-    #[serde(default)]
-    pub show_fps: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for Display {
-    fn default() -> Self {
-        Self {
-            show_formula: true,
-            show_dim_count: true,
-            show_active_layers: true,
-            show_param_values: true,
-            show_fps: false,
-        }
-    }
-}
-
-// =============================================================================
-// Viewport
-// =============================================================================
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Viewport {
-    #[serde(default = "default_viewport_width")]
-    pub width: u32,
-    #[serde(default = "default_viewport_height")]
-    pub height: u32,
-}
-
-fn default_viewport_width() -> u32 {
-    1920
-}
-
-fn default_viewport_height() -> u32 {
-    1080
-}
-
-impl Default for Viewport {
-    fn default() -> Self {
-        Self {
-            width: 1920,
-            height: 1080,
-        }
-    }
-}
-
-// =============================================================================
 // Phosphor
 // =============================================================================
 
@@ -452,21 +363,13 @@ impl Default for Phosphor {
 // Top-level Preset
 // =============================================================================
 
+/// The instrument patch: pipeline + camera + quaternion + sampling + phosphor.
+/// Ephemeral session state (tempo, palette, display, viewport) lives in the App.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Preset {
-    #[serde(default = "default_schema")]
-    pub schema: String,
-    #[serde(default = "default_version")]
-    pub version: u32,
     #[serde(default)]
     pub metadata: Metadata,
-    #[serde(default = "default_tempo")]
-    pub tempo: Param,
-    #[serde(default)]
-    pub defaults: Defaults,
-    #[serde(default = "default_palette")]
-    pub palette: String,
     #[serde(default)]
     pub pipeline: Pipeline,
     #[serde(default)]
@@ -476,44 +379,17 @@ pub struct Preset {
     #[serde(default)]
     pub sampling: Sampling,
     #[serde(default)]
-    pub display: Display,
-    #[serde(default)]
-    pub viewport: Viewport,
-    #[serde(default)]
     pub phosphor: Phosphor,
-}
-
-fn default_schema() -> String {
-    SCHEMA_NAME.into()
-}
-
-fn default_version() -> u32 {
-    SCHEMA_VERSION
-}
-
-fn default_tempo() -> Param {
-    Param::new(0.3, 0.0, 16666.67, false) // max = 1,000,000 BPM / 60
-}
-
-fn default_palette() -> String {
-    "phosphor".into()
 }
 
 impl Default for Preset {
     fn default() -> Self {
         Self {
-            schema: SCHEMA_NAME.into(),
-            version: SCHEMA_VERSION,
             metadata: Metadata::default(),
-            tempo: default_tempo(),
-            defaults: Defaults::default(),
-            palette: "phosphor".into(),
             pipeline: Pipeline::default(),
             camera: Camera::default(),
             quaternion: Quaternion::default(),
             sampling: Sampling::default(),
-            display: Display::default(),
-            viewport: Viewport::default(),
             phosphor: Phosphor::default(),
         }
     }
